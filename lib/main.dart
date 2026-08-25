@@ -267,6 +267,7 @@ class Shop {
   double rating;
   double? latitude;
   double? longitude;
+  String status;
   List<String> subscribers;
   List<QueueEntry> queue;
   List<Barber> staff;
@@ -285,6 +286,7 @@ class Shop {
     required this.rating,
     this.latitude,
     this.longitude,
+    this.status = 'pending',
     required this.subscribers,
     required this.queue,
     List<Barber>? staff,
@@ -307,6 +309,8 @@ class TheRegularApp extends StatefulWidget {
 class _TheRegularAppState extends State<TheRegularApp> {
   bool isOwnerMode = false;
   bool loadingData = true;
+  bool isAdmin = false;
+  int pendingShopCount = 0;
   String? loadError;
 
   final List<Shop> shops = [];
@@ -324,23 +328,17 @@ class _TheRegularAppState extends State<TheRegularApp> {
     _loadInitialData();
   }
 
-  Future<void> _loadInitialData() async {
+  // Pulls every shop row + its public stats fresh from Supabase and builds
+  // Shop objects. Shared by the initial load and the manual refresh button.
+  Future<List<Shop>> _fetchShops() async {
     final uid = supabase.auth.currentUser?.id;
-    if (uid == null) return;
-    setState(() {
-      loadingData = true;
-      loadError = null;
-    });
-    try {
-      // 1. All shops, for customer browsing, joined with public aggregate counts.
-      final shopRows = await supabase.from('shops').select();
-      final statsRows = await supabase.from('shop_stats').select();
-      final statsById = {for (final r in statsRows) r['shop_id'] as String: r};
+    final shopRows = await supabase.from('shops').select();
+    final statsRows = await supabase.from('shop_stats').select();
+    final statsById = {for (final r in statsRows) r['shop_id'] as String: r};
 
-      final loaded = <Shop>[];
-      for (final row in shopRows) {
-        final stats = statsById[row['id']];
-        loaded.add(Shop(
+    return [
+      for (final row in shopRows)
+        Shop(
           id: row['id'] as String,
           ownerId: row['owner_id'] as String,
           name: row['name'] as String,
@@ -350,17 +348,53 @@ class _TheRegularAppState extends State<TheRegularApp> {
           rating: (row['rating'] as num).toDouble(),
           latitude: (row['latitude'] as num?)?.toDouble(),
           longitude: (row['longitude'] as num?)?.toDouble(),
+          status: row['status'] as String? ?? 'pending',
           subscribers: [],
           queue: [],
           nextTicket: row['next_ticket'] as int,
           isMine: row['owner_id'] == uid,
-          subscriberCount: (stats?['subscriber_count'] as int?) ?? 0,
-          queueCount: (stats?['queue_count'] as int?) ?? 0,
-        ));
-      }
+          subscriberCount: (statsById[row['id']]?['subscriber_count'] as int?) ?? 0,
+          queueCount: (statsById[row['id']]?['queue_count'] as int?) ?? 0,
+        ),
+    ];
+  }
+
+  bool refreshingShops = false;
+
+  // Called from the pull-to-refresh / refresh button on the Home and Map tabs.
+  Future<void> refreshShops() async {
+    setState(() => refreshingShops = true);
+    try {
+      final loaded = await _fetchShops();
       setState(() {
         shops.clear();
-        shops.addAll(loaded);
+        shops.addAll(loaded.where((s) => s.status == 'approved' || s.isMine));
+      });
+    } catch (e) {
+      showSnack("Couldn't refresh shops. Check your connection.", isError: true);
+      debugPrint('Failed to refresh shops: $e');
+    } finally {
+      if (mounted) setState(() => refreshingShops = false);
+    }
+  }
+
+  Future<void> _loadInitialData() async {
+    final uid = supabase.auth.currentUser?.id;
+    if (uid == null) return;
+    setState(() {
+      loadingData = true;
+      loadError = null;
+    });
+    try {
+      // 1. All shops, for customer browsing, joined with public aggregate counts.
+      final loaded = await _fetchShops();
+      setState(() {
+        shops.clear();
+        // Admin accounts can technically see every shop's row via RLS (needed
+        // for the admin screen), but the regular browse/map views should only
+        // ever show approved shops (or the signed-in user's own) — otherwise
+        // an admin would see other owners' pending shops mixed into Home.
+        shops.addAll(loaded.where((s) => s.status == 'approved' || s.isMine));
       });
 
       // 2. If one of these shops is mine, load the real barber + queue detail for it.
@@ -400,6 +434,17 @@ class _TheRegularAppState extends State<TheRegularApp> {
             barber: ticketRow['barber_id'] == null ? 'Next available' : '',
           );
           myTicketPosition = (position as num).toInt();
+        });
+      }
+
+      // 5. Am I an admin? If so, also get a live count of shops awaiting review.
+      final profileRow = await supabase.from('profiles').select('is_admin').eq('id', uid).maybeSingle();
+      final admin = profileRow?['is_admin'] as bool? ?? false;
+      if (admin) {
+        final pendingRows = await supabase.from('shops').select('id').eq('status', 'pending');
+        setState(() {
+          isAdmin = true;
+          pendingShopCount = pendingRows.length;
         });
       }
     } catch (e) {
@@ -612,6 +657,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
         rating: (row['rating'] as num).toDouble(),
         latitude: (row['latitude'] as num?)?.toDouble(),
         longitude: (row['longitude'] as num?)?.toDouble(),
+        status: row['status'] as String? ?? 'pending',
         subscribers: [],
         queue: [],
         nextTicket: row['next_ticket'] as int,
@@ -621,9 +667,12 @@ class _TheRegularAppState extends State<TheRegularApp> {
         shops.add(shop);
         ownerShopId = shop.id;
       });
-      showSnack(location == null ? '$name is live (no location set)' : '$name is live');
+      showSnack('$name submitted — it will show up for customers once approved');
     } catch (e) {
-      setState(() => createShopError = 'Could not create shop: $e');
+      final message = e.toString().contains('one_shop_per_owner')
+          ? 'Your account already has a shop.'
+          : 'Could not create shop: $e';
+      setState(() => createShopError = message);
       showSnack('Could not create shop', isError: true);
     } finally {
       if (mounted) setState(() => creatingShop = false);
@@ -723,6 +772,16 @@ class _TheRegularAppState extends State<TheRegularApp> {
     }
   }
 
+  Future<void> _refreshPendingShopCount() async {
+    if (!isAdmin) return;
+    try {
+      final rows = await supabase.from('shops').select('id').eq('status', 'pending');
+      if (mounted) setState(() => pendingShopCount = rows.length);
+    } catch (e) {
+      debugPrint('Failed to refresh pending shop count: $e');
+    }
+  }
+
   Future<void> signOut() async {
     try {
       await supabase.auth.signOut();
@@ -756,6 +815,36 @@ class _TheRegularAppState extends State<TheRegularApp> {
               children: const [Text('Customer'), Text('Owner')],
             ),
           ),
+          if (isAdmin)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.shield_outlined, color: AppColors.textMuted, size: 20),
+                    tooltip: 'Admin',
+                    onPressed: () async {
+                      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AdminScreen()));
+                      _refreshPendingShopCount();
+                    },
+                  ),
+                  if (pendingShopCount > 0)
+                    Positioned(
+                      right: 2,
+                      top: 2,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(color: AppColors.red, borderRadius: BorderRadius.circular(8)),
+                        child: Text(
+                          '$pendingShopCount',
+                          style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.logout, color: AppColors.textMuted, size: 20),
             onPressed: signOut,
@@ -791,6 +880,8 @@ class _TheRegularAppState extends State<TheRegularApp> {
                       cancelling: cancelling,
                       joiningQueue: joiningQueue,
                       leavingQueue: leavingQueue,
+                      refreshingShops: refreshingShops,
+                      onRefreshShops: refreshShops,
                       onSubscribe: subscribe,
                       onCancelSubscription: cancelSubscription,
                       onWalkIn: walkIn,
@@ -926,6 +1017,236 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   }
 }
 
+// ---------- ADMIN ----------
+
+class AdminScreen extends StatefulWidget {
+  const AdminScreen({super.key});
+  @override
+  State<AdminScreen> createState() => _AdminScreenState();
+}
+
+class _AdminScreenState extends State<AdminScreen> {
+  List<Map<String, dynamic>> shops = [];
+  Map<String, String> ownerNames = {};
+  bool loading = true;
+  String filter = 'pending';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => loading = true);
+    try {
+      final rows = await supabase.from('shops').select().order('created_at', ascending: false);
+      final list = List<Map<String, dynamic>>.from(rows);
+      final ownerIds = list.map((s) => s['owner_id'] as String).toSet().toList();
+      final profileRows = ownerIds.isEmpty
+          ? <Map<String, dynamic>>[]
+          : await supabase.from('profiles').select('id, full_name').inFilter('id', ownerIds);
+      setState(() {
+        shops = list;
+        ownerNames = {
+          for (final p in profileRows) p['id'] as String: (p['full_name'] as String?)?.trim().isNotEmpty == true ? p['full_name'] as String : 'Unnamed'
+        };
+      });
+    } catch (e) {
+      showSnack('Could not load shops', isError: true);
+      debugPrint('Admin load failed: $e');
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  Future<void> _setStatus(String shopId, String status) async {
+    try {
+      await supabase.from('shops').update({'status': status}).eq('id', shopId);
+      setState(() {
+        final idx = shops.indexWhere((s) => s['id'] == shopId);
+        if (idx != -1) shops[idx] = {...shops[idx], 'status': status};
+      });
+      showSnack(status == 'approved' ? 'Shop approved' : 'Shop rejected');
+    } catch (e) {
+      showSnack('Failed to update shop', isError: true);
+      debugPrint('Admin status update failed: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = filter == 'all' ? shops : shops.where((s) => s['status'] == filter).toList();
+    final pendingCount = shops.where((s) => s['status'] == 'pending').length;
+
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: AppColors.bg,
+        elevation: 0,
+        title: const Text('Admin · Shops', style: TextStyle(color: AppColors.text, fontSize: 16)),
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh, color: AppColors.textMuted), onPressed: _load, tooltip: 'Refresh'),
+        ],
+      ),
+      body: loading
+          ? const Center(child: CircularProgressIndicator(color: AppColors.brass))
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  child: Row(
+                    children: [
+                      _FilterChip(label: 'Pending', count: pendingCount, selected: filter == 'pending', onTap: () => setState(() => filter = 'pending')),
+                      const SizedBox(width: 8),
+                      _FilterChip(label: 'Approved', selected: filter == 'approved', onTap: () => setState(() => filter = 'approved')),
+                      const SizedBox(width: 8),
+                      _FilterChip(label: 'Rejected', selected: filter == 'rejected', onTap: () => setState(() => filter = 'rejected')),
+                      const SizedBox(width: 8),
+                      _FilterChip(label: 'All', selected: filter == 'all', onTap: () => setState(() => filter = 'all')),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: filtered.isEmpty
+                      ? Center(
+                          child: Text('No ${filter == 'all' ? '' : filter} shops', style: const TextStyle(color: AppColors.textFaint, fontSize: 13)),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: filtered.length,
+                          itemBuilder: (context, i) {
+                            final s = filtered[i];
+                            return _AdminShopCard(
+                              shop: s,
+                              ownerName: ownerNames[s['owner_id']] ?? '—',
+                              onApprove: () => _setStatus(s['id'] as String, 'approved'),
+                              onReject: () => _setStatus(s['id'] as String, 'rejected'),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class _FilterChip extends StatelessWidget {
+  final String label;
+  final int? count;
+  final bool selected;
+  final VoidCallback onTap;
+  const _FilterChip({required this.label, this.count, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.brass : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: selected ? AppColors.brass : AppColors.line),
+        ),
+        child: Text(
+          count != null && count! > 0 ? '$label ($count)' : label,
+          style: TextStyle(
+            color: selected ? AppColors.bg : AppColors.textMuted,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AdminShopCard extends StatelessWidget {
+  final Map<String, dynamic> shop;
+  final String ownerName;
+  final VoidCallback onApprove;
+  final VoidCallback onReject;
+  const _AdminShopCard({required this.shop, required this.ownerName, required this.onApprove, required this.onReject});
+
+  @override
+  Widget build(BuildContext context) {
+    final status = shop['status'] as String;
+    final hasLocation = shop['latitude'] != null;
+    final createdAt = DateTime.tryParse(shop['created_at'] as String? ?? '');
+    final statusColor = status == 'approved' ? AppColors.brass : (status == 'rejected' ? AppColors.red : AppColors.textMuted);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(shop['name'] as String,
+                    style: const TextStyle(color: AppColors.text, fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(color: statusColor.withOpacity(0.15), borderRadius: BorderRadius.circular(4)),
+                child: Text(status.toUpperCase(),
+                    style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.3)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text('${shop['area']} · R${shop['price']}/mo · ${shop['chairs']} chairs',
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
+          const SizedBox(height: 2),
+          Text('Owner: $ownerName', style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
+          const SizedBox(height: 2),
+          Row(
+            children: [
+              Icon(hasLocation ? Icons.location_on : Icons.location_off, size: 12, color: AppColors.textFaint),
+              const SizedBox(width: 4),
+              Text(hasLocation ? 'Location set' : 'No location', style: const TextStyle(color: AppColors.textFaint, fontSize: 11)),
+              if (createdAt != null) ...[
+                const Text('  ·  ', style: TextStyle(color: AppColors.textFaint, fontSize: 11)),
+                Text('Created ${createdAt.toLocal().toString().split(' ').first}',
+                    style: const TextStyle(color: AppColors.textFaint, fontSize: 11)),
+              ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _OutlineButton(
+                  label: 'Approve',
+                  color: AppColors.brass,
+                  onTap: status == 'approved' ? () {} : onApprove,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _OutlineButton(
+                  label: 'Reject',
+                  color: AppColors.red,
+                  onTap: status == 'rejected' ? () {} : onReject,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ErrorState extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
@@ -963,6 +1284,8 @@ class CustomerFlow extends StatefulWidget {
   final bool cancelling;
   final bool joiningQueue;
   final bool leavingQueue;
+  final bool refreshingShops;
+  final Future<void> Function() onRefreshShops;
   final void Function(String shopId) onSubscribe;
   final VoidCallback onCancelSubscription;
   final Future<void> Function(String shopId) onWalkIn;
@@ -979,6 +1302,8 @@ class CustomerFlow extends StatefulWidget {
     required this.cancelling,
     required this.joiningQueue,
     required this.leavingQueue,
+    required this.refreshingShops,
+    required this.onRefreshShops,
     required this.onSubscribe,
     required this.onCancelSubscription,
     required this.onWalkIn,
@@ -1039,11 +1364,15 @@ class _CustomerFlowState extends State<CustomerFlow> {
       body = ShopMapScreen(
         shops: widget.shops,
         onOpen: (s) => setState(() => openedShop = s),
+        refreshingShops: widget.refreshingShops,
+        onRefreshShops: widget.onRefreshShops,
       );
     } else {
       body = ShopListScreen(
         shops: widget.shops,
         onOpen: (s) => setState(() => openedShop = s),
+        refreshingShops: widget.refreshingShops,
+        onRefreshShops: widget.onRefreshShops,
       );
     }
 
@@ -1087,20 +1416,58 @@ class _CustomerFlowState extends State<CustomerFlow> {
 class ShopListScreen extends StatelessWidget {
   final List<Shop> shops;
   final void Function(Shop) onOpen;
-  const ShopListScreen({super.key, required this.shops, required this.onOpen});
+  final bool refreshingShops;
+  final Future<void> Function() onRefreshShops;
+  const ShopListScreen({
+    super.key,
+    required this.shops,
+    required this.onOpen,
+    required this.refreshingShops,
+    required this.onRefreshShops,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text(
-          "One monthly fee. Unlimited weekly cuts. Walk in, no booking needed.",
-          style: TextStyle(color: AppColors.textMuted, fontSize: 13),
-        ),
-        const SizedBox(height: 16),
-        ...shops.map((s) => _ShopCard(shop: s, onTap: () => onOpen(s))),
-      ],
+    return RefreshIndicator(
+      color: AppColors.brass,
+      backgroundColor: AppColors.surface,
+      onRefresh: onRefreshShops,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Expanded(
+                child: Text(
+                  "One monthly fee. Unlimited weekly cuts. Walk in, no booking needed.",
+                  style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+                ),
+              ),
+              IconButton(
+                icon: refreshingShops
+                    ? const SizedBox(
+                        height: 16,
+                        width: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.brass),
+                      )
+                    : const Icon(Icons.refresh, color: AppColors.textMuted, size: 20),
+                onPressed: refreshingShops ? null : onRefreshShops,
+                tooltip: 'Refresh',
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          if (shops.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 40),
+              child: Center(
+                child: Text('No shops yet — pull down to refresh.', style: TextStyle(color: AppColors.textFaint, fontSize: 13)),
+              ),
+            ),
+          ...shops.map((s) => _ShopCard(shop: s, onTap: () => onOpen(s))),
+        ],
+      ),
     );
   }
 }
@@ -1108,7 +1475,15 @@ class ShopListScreen extends StatelessWidget {
 class ShopMapScreen extends StatefulWidget {
   final List<Shop> shops;
   final void Function(Shop) onOpen;
-  const ShopMapScreen({super.key, required this.shops, required this.onOpen});
+  final bool refreshingShops;
+  final Future<void> Function() onRefreshShops;
+  const ShopMapScreen({
+    super.key,
+    required this.shops,
+    required this.onOpen,
+    required this.refreshingShops,
+    required this.onRefreshShops,
+  });
 
   @override
   State<ShopMapScreen> createState() => _ShopMapScreenState();
@@ -1228,29 +1603,57 @@ class _ShopMapScreenState extends State<ShopMapScreen> {
                     ),
                   ),
                 ),
+              Positioned(
+                right: 12,
+                bottom: 12,
+                child: FloatingActionButton.small(
+                  heroTag: 'refresh_shops',
+                  backgroundColor: AppColors.surface2,
+                  onPressed: widget.refreshingShops ? null : widget.onRefreshShops,
+                  child: widget.refreshingShops
+                      ? const SizedBox(
+                          height: 16,
+                          width: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.brass),
+                        )
+                      : const Icon(Icons.refresh, color: AppColors.brass, size: 20),
+                ),
+              ),
             ],
           ),
         ),
         Expanded(
           flex: 2,
-          child: sorted.isEmpty
-              ? const Center(
-                  child: Text("No shops have a location set yet.", style: TextStyle(color: AppColors.textFaint, fontSize: 13)),
-                )
-              : ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
-                    for (final shop in sorted) _NearbyShopCard(shop: shop, distanceKm: _distanceKm(shop), onTap: () => widget.onOpen(shop)),
-                    if (widget.shops.length > located.length)
+          child: RefreshIndicator(
+            color: AppColors.brass,
+            backgroundColor: AppColors.surface,
+            onRefresh: widget.onRefreshShops,
+            child: sorted.isEmpty
+                ? ListView(
+                    children: const [
                       Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          "${widget.shops.length - located.length} shop(s) haven't set a location yet and aren't shown here.",
-                          style: const TextStyle(color: AppColors.textFaint, fontSize: 11),
+                        padding: EdgeInsets.only(top: 60),
+                        child: Center(
+                          child: Text("No shops have a location set yet.", style: TextStyle(color: AppColors.textFaint, fontSize: 13)),
                         ),
                       ),
-                  ],
-                ),
+                    ],
+                  )
+                : ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      for (final shop in sorted) _NearbyShopCard(shop: shop, distanceKm: _distanceKm(shop), onTap: () => widget.onOpen(shop)),
+                      if (widget.shops.length > located.length)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            "${widget.shops.length - located.length} shop(s) haven't set a location yet and aren't shown here.",
+                            style: const TextStyle(color: AppColors.textFaint, fontSize: 11),
+                          ),
+                        ),
+                    ],
+                  ),
+          ),
         ),
       ],
     );
@@ -1623,6 +2026,36 @@ class _OwnerFlowState extends State<OwnerFlow> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (shop.status != 'approved') ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.only(bottom: 16),
+            decoration: BoxDecoration(
+              color: (shop.status == 'rejected' ? AppColors.red : AppColors.brass).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: (shop.status == 'rejected' ? AppColors.red : AppColors.brass).withOpacity(0.4)),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  shop.status == 'rejected' ? Icons.block : Icons.hourglass_top,
+                  color: shop.status == 'rejected' ? AppColors.red : AppColors.brass,
+                  size: 18,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    shop.status == 'rejected'
+                        ? "This shop wasn't approved and isn't visible to customers."
+                        : "Waiting for approval — customers can't find or subscribe to this shop yet.",
+                    style: const TextStyle(color: AppColors.text, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
