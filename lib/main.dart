@@ -247,7 +247,14 @@ class QueueEntry {
   final int ticketNo;
   final String name;
   final String barber;
-  QueueEntry({required this.id, required this.ticketNo, required this.name, required this.barber});
+  String status; // 'waiting' | 'called' | 'done' | 'left'
+  QueueEntry({
+    required this.id,
+    required this.ticketNo,
+    required this.name,
+    required this.barber,
+    this.status = 'waiting',
+  });
 }
 
 class Barber {
@@ -314,7 +321,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
   String? loadError;
 
   final List<Shop> shops = [];
-  String? mySubShopId;
+  Set<String> mySubShopIds = {};
   QueueEntry? myTicket;
   int? myTicketPosition;
   String? myTicketShopId;
@@ -404,23 +411,20 @@ class _TheRegularAppState extends State<TheRegularApp> {
         await _refreshOwnerShopDetail();
       }
 
-      // 3. My active subscription, if any.
-      final subRow = await supabase
+      // 3. All my active subscriptions.
+      final subRows = await supabase
           .from('subscriptions')
           .select()
           .eq('customer_id', uid)
-          .eq('status', 'active')
-          .maybeSingle();
-      if (subRow != null) {
-        setState(() => mySubShopId = subRow['shop_id'] as String);
-      }
+          .eq('status', 'active');
+      setState(() => mySubShopIds = {for (final r in subRows) r['shop_id'] as String});
 
-      // 4. My active queue ticket, if any.
+      // 4. My active queue ticket, if any (waiting or already called).
       final ticketRow = await supabase
           .from('queue_entries')
           .select()
           .eq('customer_id', uid)
-          .eq('status', 'waiting')
+          .inFilter('status', ['waiting', 'called'])
           .maybeSingle();
       if (ticketRow != null) {
         final shopId = ticketRow['shop_id'] as String;
@@ -432,6 +436,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
             ticketNo: ticketRow['ticket_no'] as int,
             name: ticketRow['display_name'] as String,
             barber: ticketRow['barber_id'] == null ? 'Next available' : '',
+            status: ticketRow['status'] as String,
           );
           myTicketPosition = (position as num).toInt();
         });
@@ -463,7 +468,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
         .from('queue_entries')
         .select()
         .eq('shop_id', ownerShopId as Object)
-        .eq('status', 'waiting')
+        .inFilter('status', ['waiting', 'called'])
         .order('ticket_no');
     final statsRow = await supabase.from('shop_stats').select().eq('shop_id', ownerShopId as Object).maybeSingle();
     final barbersById = {
@@ -486,6 +491,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
               ticketNo: q['ticket_no'] as int,
               name: q['display_name'] as String,
               barber: barbersById[q['barber_id']] ?? 'Unassigned',
+              status: q['status'] as String,
             )
         ]);
       shop.queueCount = shop.queue.length;
@@ -494,7 +500,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
   }
 
   bool subscribing = false;
-  bool cancelling = false;
+  String? cancellingShopId;
   bool joiningQueue = false;
   bool leavingQueue = false;
 
@@ -506,7 +512,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
     try {
       await supabase.from('subscriptions').insert({'shop_id': shopId, 'customer_id': uid});
       setState(() {
-        mySubShopId = shopId;
+        mySubShopIds = {...mySubShopIds, shopId};
         shops.firstWhere((s) => s.id == shopId).subscriberCount += 1;
       });
       showSnack("You're subscribed to $shopName");
@@ -518,11 +524,10 @@ class _TheRegularAppState extends State<TheRegularApp> {
     }
   }
 
-  Future<void> cancelSubscription() async {
+  Future<void> cancelSubscription(String shopId) async {
     final uid = supabase.auth.currentUser?.id;
-    if (uid == null || mySubShopId == null) return;
-    final shopId = mySubShopId!;
-    setState(() => cancelling = true);
+    if (uid == null || !mySubShopIds.contains(shopId)) return;
+    setState(() => cancellingShopId = shopId);
     try {
       await supabase
           .from('subscriptions')
@@ -532,17 +537,21 @@ class _TheRegularAppState extends State<TheRegularApp> {
           .eq('status', 'active');
       setState(() {
         shops.firstWhere((s) => s.id == shopId).subscriberCount -= 1;
-        mySubShopId = null;
-        myTicket = null;
-        myTicketPosition = null;
-        myTicketShopId = null;
+        mySubShopIds = {...mySubShopIds}..remove(shopId);
+        // Only clear the active ticket if it belonged to the shop being cancelled —
+        // a ticket at a different shop (from a different subscription) stays intact.
+        if (myTicketShopId == shopId) {
+          myTicket = null;
+          myTicketPosition = null;
+          myTicketShopId = null;
+        }
       });
       showSnack('Subscription cancelled');
     } catch (e) {
       showSnack("Couldn't cancel your subscription. Please try again.", isError: true);
       debugPrint('Failed to cancel subscription: $e');
     } finally {
-      if (mounted) setState(() => cancelling = false);
+      if (mounted) setState(() => cancellingShopId = null);
     }
   }
 
@@ -585,6 +594,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
           ticketNo: row['ticket_no'] as int,
           name: row['display_name'] as String,
           barber: barberName,
+          status: row['status'] as String,
         );
         myTicketPosition = (position as num).toInt();
         myTicketShopId = shopId;
@@ -592,13 +602,47 @@ class _TheRegularAppState extends State<TheRegularApp> {
       });
       showSnack("You're in line — ticket #${row['ticket_no']}");
     } on PostgrestException catch (e) {
-      showSnack(e.message.contains('No active subscription') ? "You need an active subscription to walk in." : e.message,
-          isError: true);
+      final message = e.message.contains('No active subscription')
+          ? "You need an active subscription to walk in."
+          : e.message.contains('Already in another queue')
+              ? "You're already in a queue at another shop. Leave that one first."
+              : e.message;
+      showSnack(message, isError: true);
     } catch (e) {
       showSnack("Couldn't join the queue. Please try again.", isError: true);
       debugPrint('Failed to join queue: $e');
     } finally {
       if (mounted) setState(() => joiningQueue = false);
+    }
+  }
+
+  bool refreshingTicket = false;
+
+  Future<void> refreshTicket() async {
+    if (myTicket == null || myTicketShopId == null) return;
+    setState(() => refreshingTicket = true);
+    try {
+      final row = await supabase.from('queue_entries').select().eq('id', myTicket!.id).maybeSingle();
+      if (row == null || !['waiting', 'called'].contains(row['status'])) {
+        // The owner marked it done (or it was cleared some other way).
+        setState(() {
+          myTicket = null;
+          myTicketPosition = null;
+          myTicketShopId = null;
+        });
+        showSnack("Looks like you've been served — enjoy the cut!");
+      } else {
+        final position = await supabase.rpc('queue_position', params: {'p_shop_id': myTicketShopId});
+        setState(() {
+          myTicket!.status = row['status'] as String;
+          myTicketPosition = (position as num).toInt();
+        });
+      }
+    } catch (e) {
+      showSnack("Couldn't refresh your ticket.", isError: true);
+      debugPrint('Failed to refresh ticket: $e');
+    } finally {
+      if (mounted) setState(() => refreshingTicket = false);
     }
   }
 
@@ -708,6 +752,21 @@ class _TheRegularAppState extends State<TheRegularApp> {
       debugPrint('Failed to refresh owner shop: $e');
     } finally {
       if (mounted) setState(() => refreshingQueue = false);
+    }
+  }
+
+  Future<void> callCustomer(String queueId) async {
+    if (ownerShop == null) return;
+    try {
+      await supabase.from('queue_entries').update({'status': 'called'}).eq('id', queueId);
+      setState(() {
+        final entry = ownerShop!.queue.firstWhere((q) => q.id == queueId);
+        entry.status = 'called';
+      });
+      showSnack('Customer called');
+    } catch (e) {
+      showSnack("Couldn't call that customer. Please try again.", isError: true);
+      debugPrint('Failed to call customer: $e');
     }
   }
 
@@ -865,6 +924,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
                       onRefresh: refreshOwnerShop,
                       refreshingQueue: refreshingQueue,
                       onCompleteQueueEntry: completeQueueEntry,
+                      onCallCustomer: callCustomer,
                       onAddBarber: addBarber,
                       onRemoveBarber: removeBarber,
                       onToggleBarberActive: toggleBarberActive,
@@ -872,16 +932,18 @@ class _TheRegularAppState extends State<TheRegularApp> {
                     )
                   : CustomerFlow(
                       shops: shops,
-                      mySubShopId: mySubShopId,
+                      mySubShopIds: mySubShopIds,
                       myTicket: myTicket,
                       myTicketPosition: myTicketPosition,
                       myTicketShopId: myTicketShopId,
                       subscribing: subscribing,
-                      cancelling: cancelling,
+                      cancellingShopId: cancellingShopId,
                       joiningQueue: joiningQueue,
                       leavingQueue: leavingQueue,
                       refreshingShops: refreshingShops,
                       onRefreshShops: refreshShops,
+                      refreshingTicket: refreshingTicket,
+                      onRefreshTicket: refreshTicket,
                       onSubscribe: subscribe,
                       onCancelSubscription: cancelSubscription,
                       onWalkIn: walkIn,
@@ -1276,34 +1338,38 @@ class _ErrorState extends StatelessWidget {
 
 class CustomerFlow extends StatefulWidget {
   final List<Shop> shops;
-  final String? mySubShopId;
+  final Set<String> mySubShopIds;
   final QueueEntry? myTicket;
   final int? myTicketPosition;
   final String? myTicketShopId;
   final bool subscribing;
-  final bool cancelling;
+  final String? cancellingShopId;
   final bool joiningQueue;
   final bool leavingQueue;
   final bool refreshingShops;
   final Future<void> Function() onRefreshShops;
+  final bool refreshingTicket;
+  final Future<void> Function() onRefreshTicket;
   final void Function(String shopId) onSubscribe;
-  final VoidCallback onCancelSubscription;
+  final void Function(String shopId) onCancelSubscription;
   final Future<void> Function(String shopId) onWalkIn;
   final VoidCallback onLeaveQueue;
 
   const CustomerFlow({
     super.key,
     required this.shops,
-    required this.mySubShopId,
+    required this.mySubShopIds,
     required this.myTicket,
     required this.myTicketPosition,
     required this.myTicketShopId,
     required this.subscribing,
-    required this.cancelling,
+    required this.cancellingShopId,
     required this.joiningQueue,
     required this.leavingQueue,
     required this.refreshingShops,
     required this.onRefreshShops,
+    required this.refreshingTicket,
+    required this.onRefreshTicket,
     required this.onSubscribe,
     required this.onCancelSubscription,
     required this.onWalkIn,
@@ -1324,11 +1390,11 @@ class _CustomerFlowState extends State<CustomerFlow> {
     if (openedShop != null) {
       body = ShopDetailScreen(
         shop: openedShop!,
-        isSubscribed: widget.mySubShopId == openedShop!.id,
-        hasOtherSub: widget.mySubShopId != null && widget.mySubShopId != openedShop!.id,
+        isSubscribed: widget.mySubShopIds.contains(openedShop!.id),
         subscribing: widget.subscribing,
         joiningQueue: widget.joiningQueue,
-        cancelling: widget.cancelling,
+        cancelling: widget.cancellingShopId == openedShop!.id,
+        queuedElsewhere: widget.myTicket != null && widget.myTicketShopId != openedShop!.id,
         onBack: () => setState(() => openedShop = null),
         onSubscribe: () => widget.onSubscribe(openedShop!.id),
         onWalkIn: () async {
@@ -1341,7 +1407,7 @@ class _CustomerFlowState extends State<CustomerFlow> {
             });
           }
         },
-        onCancel: widget.onCancelSubscription,
+        onCancel: () => widget.onCancelSubscription(openedShop!.id),
       );
     } else if (tab == 1 && widget.myTicket != null) {
       final shop = widget.shops.firstWhere((s) => s.id == widget.myTicketShopId);
@@ -1350,14 +1416,14 @@ class _CustomerFlowState extends State<CustomerFlow> {
         ticket: widget.myTicket!,
         position: widget.myTicketPosition ?? 1,
         leaving: widget.leavingQueue,
+        refreshing: widget.refreshingTicket,
         onLeave: widget.onLeaveQueue,
+        onRefresh: widget.onRefreshTicket,
       );
     } else if (tab == 2) {
       body = AccountScreen(
-        shop: widget.mySubShopId == null
-            ? null
-            : widget.shops.firstWhere((s) => s.id == widget.mySubShopId),
-        cancelling: widget.cancelling,
+        shops: widget.shops.where((s) => widget.mySubShopIds.contains(s.id)).toList(),
+        cancellingShopId: widget.cancellingShopId,
         onCancel: widget.onCancelSubscription,
       );
     } else if (tab == 3) {
@@ -1764,10 +1830,10 @@ class _ShopCard extends StatelessWidget {
 class ShopDetailScreen extends StatelessWidget {
   final Shop shop;
   final bool isSubscribed;
-  final bool hasOtherSub;
   final bool subscribing;
   final bool joiningQueue;
   final bool cancelling;
+  final bool queuedElsewhere;
   final VoidCallback onBack;
   final VoidCallback onSubscribe;
   final VoidCallback onWalkIn;
@@ -1777,10 +1843,10 @@ class ShopDetailScreen extends StatelessWidget {
     super.key,
     required this.shop,
     required this.isSubscribed,
-    required this.hasOtherSub,
     required this.subscribing,
     required this.joiningQueue,
     required this.cancelling,
+    required this.queuedElsewhere,
     required this.onBack,
     required this.onSubscribe,
     required this.onWalkIn,
@@ -1819,12 +1885,14 @@ class ShopDetailScreen extends StatelessWidget {
           const Text("✓ YOU'RE A MEMBER HERE",
               style: TextStyle(color: AppColors.brass, fontSize: 12, fontWeight: FontWeight.bold)),
           const SizedBox(height: 10),
-          _PrimaryButton(label: 'Walk in now', onTap: onWalkIn, loading: joiningQueue),
+          if (queuedElsewhere) ...[
+            const Text("You're already waiting in a queue at another shop. Leave that one before joining this one.",
+                style: TextStyle(color: AppColors.textFaint, fontSize: 12)),
+            const SizedBox(height: 10),
+          ],
+          _PrimaryButton(label: 'Walk in now', onTap: onWalkIn, loading: joiningQueue, disabled: queuedElsewhere),
           const SizedBox(height: 10),
           _OutlineButton(label: 'Cancel subscription', color: AppColors.red, onTap: onCancel, loading: cancelling),
-        ] else if (hasOtherSub) ...[
-          const Text("You're already subscribed to another shop. Cancel that one first to switch.",
-              style: TextStyle(color: AppColors.textFaint, fontSize: 13)),
         ] else
           _PrimaryButton(label: 'Subscribe — R${shop.price}/month', onTap: onSubscribe, loading: subscribing),
       ],
@@ -1837,28 +1905,47 @@ class TicketScreen extends StatelessWidget {
   final QueueEntry ticket;
   final int position;
   final bool leaving;
+  final bool refreshing;
   final VoidCallback onLeave;
+  final VoidCallback onRefresh;
   const TicketScreen({
     super.key,
     required this.shop,
     required this.ticket,
     required this.position,
     required this.leaving,
+    required this.refreshing,
     required this.onLeave,
+    required this.onRefresh,
   });
 
   @override
   Widget build(BuildContext context) {
+    final called = ticket.status == 'called';
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
+          Align(
+            alignment: Alignment.centerRight,
+            child: IconButton(
+              icon: refreshing
+                  ? const SizedBox(
+                      height: 16,
+                      width: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.brass),
+                    )
+                  : const Icon(Icons.refresh, color: AppColors.textMuted, size: 20),
+              onPressed: refreshing ? null : onRefresh,
+              tooltip: 'Check for updates',
+            ),
+          ),
           Container(
             padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
             decoration: BoxDecoration(
-              color: AppColors.surface2,
+              color: called ? AppColors.brass.withOpacity(0.12) : AppColors.surface2,
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.brass.withOpacity(0.5), style: BorderStyle.solid),
+              border: Border.all(color: AppColors.brass.withOpacity(called ? 0.9 : 0.5), width: called ? 2 : 1),
             ),
             child: Column(
               children: [
@@ -1867,11 +1954,21 @@ class TicketScreen extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text('${ticket.ticketNo}',
                     style: const TextStyle(color: AppColors.brass, fontSize: 56, fontWeight: FontWeight.bold)),
-                Text('Position $position in line · barber ${ticket.barber}',
-                    style: const TextStyle(color: AppColors.text, fontSize: 13)),
-                const SizedBox(height: 4),
-                Text('Est. wait ~${position * 8} min',
-                    style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
+                if (called) ...[
+                  const Icon(Icons.content_cut, color: AppColors.brass, size: 22),
+                  const SizedBox(height: 6),
+                  const Text("YOU'RE UP!",
+                      style: TextStyle(color: AppColors.brass, fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+                  const SizedBox(height: 4),
+                  Text('Head to the shop now · barber ${ticket.barber}',
+                      style: const TextStyle(color: AppColors.text, fontSize: 13)),
+                ] else ...[
+                  Text('Position $position in line · barber ${ticket.barber}',
+                      style: const TextStyle(color: AppColors.text, fontSize: 13)),
+                  const SizedBox(height: 4),
+                  Text('Est. wait ~${position * 8} min',
+                      style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
+                ],
               ],
             ),
           ),
@@ -1884,28 +1981,54 @@ class TicketScreen extends StatelessWidget {
 }
 
 class AccountScreen extends StatelessWidget {
-  final Shop? shop;
-  final bool cancelling;
-  final VoidCallback onCancel;
-  const AccountScreen({super.key, required this.shop, required this.cancelling, required this.onCancel});
+  final List<Shop> shops;
+  final String? cancellingShopId;
+  final void Function(String shopId) onCancel;
+  const AccountScreen({super.key, required this.shops, required this.cancellingShopId, required this.onCancel});
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    if (shops.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Text("No active subscriptions yet. Find a shop from the home tab to get started.",
+            style: TextStyle(color: AppColors.textFaint, fontSize: 13)),
+      );
+    }
+    return ListView(
       padding: const EdgeInsets.all(16),
-      child: shop == null
-          ? const Text("No active subscription yet. Find a shop from the home tab to get started.",
-              style: TextStyle(color: AppColors.textFaint, fontSize: 13))
-          : Column(
+      children: [
+        Text(
+          shops.length == 1 ? 'Active subscription' : '${shops.length} active subscriptions',
+          style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
+        ),
+        const SizedBox(height: 12),
+        for (final shop in shops)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Active subscription', style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
-                const SizedBox(height: 4),
-                Text(shop!.name, style: const TextStyle(color: AppColors.text, fontSize: 20, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 18),
-                _OutlineButton(label: 'Cancel subscription', color: AppColors.red, onTap: onCancel, loading: cancelling),
+                Text(shop.name, style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 2),
+                Text('${shop.area} · R${shop.price}/mo', style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                const SizedBox(height: 14),
+                _OutlineButton(
+                  label: 'Cancel subscription',
+                  color: AppColors.red,
+                  onTap: () => onCancel(shop.id),
+                  loading: cancellingShopId == shop.id,
+                ),
               ],
             ),
+          ),
+      ],
     );
   }
 }
@@ -1920,6 +2043,7 @@ class OwnerFlow extends StatefulWidget {
   final VoidCallback onRefresh;
   final bool refreshingQueue;
   final void Function(String queueId) onCompleteQueueEntry;
+  final void Function(String queueId) onCallCustomer;
   final void Function(String name) onAddBarber;
   final void Function(String barberId) onRemoveBarber;
   final void Function(String barberId) onToggleBarberActive;
@@ -1934,6 +2058,7 @@ class OwnerFlow extends StatefulWidget {
     required this.onRefresh,
     required this.refreshingQueue,
     required this.onCompleteQueueEntry,
+    required this.onCallCustomer,
     required this.onAddBarber,
     required this.onRemoveBarber,
     required this.onToggleBarberActive,
@@ -2120,7 +2245,7 @@ class _OwnerFlowState extends State<OwnerFlow> {
             const SizedBox(width: 10),
             Expanded(child: _MetricCard(label: 'Monthly revenue', value: 'R${shop.subscriberCount * shop.price}', accent: true)),
             const SizedBox(width: 10),
-            Expanded(child: _MetricCard(label: 'In queue', value: '${shop.queue.length}')),
+            Expanded(child: _MetricCard(label: 'In queue', value: '${shop.queue.where((q) => q.status == 'waiting').length}')),
           ]),
           const SizedBox(height: 16),
           _OutlineButton(
@@ -2139,13 +2264,39 @@ class _OwnerFlowState extends State<OwnerFlow> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text.rich(TextSpan(children: [
-                      TextSpan(text: '#${q.ticketNo} ', style: const TextStyle(color: AppColors.brass, fontWeight: FontWeight.bold)),
-                      TextSpan(text: '${q.name} → ${q.barber}', style: const TextStyle(color: AppColors.text)),
-                    ])),
-                    GestureDetector(
-                      onTap: () => widget.onCompleteQueueEntry(q.id),
-                      child: const Text('Done', style: TextStyle(color: AppColors.textMuted, decoration: TextDecoration.underline)),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Text.rich(TextSpan(children: [
+                            TextSpan(text: '#${q.ticketNo} ', style: const TextStyle(color: AppColors.brass, fontWeight: FontWeight.bold)),
+                            TextSpan(text: '${q.name} → ${q.barber}', style: const TextStyle(color: AppColors.text)),
+                          ])),
+                          if (q.status == 'called') ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(color: AppColors.brass.withOpacity(0.15), borderRadius: BorderRadius.circular(4)),
+                              child: const Text('CALLED', style: TextStyle(color: AppColors.brass, fontSize: 10, fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        if (q.status == 'waiting')
+                          GestureDetector(
+                            onTap: () => widget.onCallCustomer(q.id),
+                            child: const Padding(
+                              padding: EdgeInsets.only(right: 14),
+                              child: Text('Call', style: TextStyle(color: AppColors.brass, decoration: TextDecoration.underline, fontWeight: FontWeight.w600)),
+                            ),
+                          ),
+                        GestureDetector(
+                          onTap: () => widget.onCompleteQueueEntry(q.id),
+                          child: const Text('Done', style: TextStyle(color: AppColors.textMuted, decoration: TextDecoration.underline)),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -2308,14 +2459,15 @@ class _PrimaryButton extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
   final bool loading;
-  const _PrimaryButton({required this.label, required this.onTap, this.loading = false});
+  final bool disabled;
+  const _PrimaryButton({required this.label, required this.onTap, this.loading = false, this.disabled = false});
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton(
-        onPressed: loading ? null : onTap,
+        onPressed: (loading || disabled) ? null : onTap,
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.brass,
           foregroundColor: AppColors.bg,
