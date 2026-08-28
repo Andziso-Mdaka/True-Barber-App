@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "781190414818",
+    "project_id": "true-barber-58d7c",
+    "storage_bucket": "true-barber-58d7c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:781190414818:android:446bb711f5464b3e6b39bb",
+        "android_client_info": {
+          "package_name": "com.example.the_regular"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCqnLQQn0pgkry6wwkpTpIWSRWaOFnmTaY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

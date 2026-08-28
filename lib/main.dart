@@ -1,11 +1,33 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'supabase_config.dart';
+import 'firebase_options.dart';
 
 final supabase = Supabase.instance.client;
+final flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+
+const _androidNotificationChannel = AndroidNotificationChannel(
+  'queue_updates', // must match the channel id used when showing notifications
+  'Queue updates',
+  description: "Alerts you when it's your turn at a shop you're queued at.",
+  importance: Importance.high,
+);
+
+// Must be a top-level function — this is what fires when a push notification
+// arrives while the app is fully backgrounded or terminated.
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // Nothing to do here: when the FCM payload includes a "notification" block
+  // (which ours does), Android/iOS show the system notification automatically
+  // even in the background — no extra code needed for that case.
+}
 
 // Requests location permission if needed and returns the device's current
 // position, or null (with a snackbar explaining why) if it's unavailable.
@@ -40,6 +62,20 @@ final scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
+  await flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(_androidNotificationChannel);
+  await flutterLocalNotificationsPlugin.initialize(
+    const InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(),
+    ),
+  );
+
   runApp(const RootApp());
 }
 
@@ -333,6 +369,81 @@ class _TheRegularAppState extends State<TheRegularApp> {
   void initState() {
     super.initState();
     _loadInitialData();
+    _setupPushNotifications();
+  }
+
+  StreamSubscription<RemoteMessage>? _foregroundMessageSub;
+  StreamSubscription<RemoteMessage>? _openedAppMessageSub;
+  StreamSubscription<String>? _tokenRefreshSub;
+
+  Future<void> _setupPushNotifications() async {
+    try {
+      final settings = await FirebaseMessaging.instance.requestPermission(alert: true, badge: true, sound: true);
+      if (settings.authorizationStatus == AuthorizationStatus.denied) {
+        debugPrint('Push notifications denied by user.');
+        return;
+      }
+
+      await _registerDeviceToken();
+      _tokenRefreshSub = FirebaseMessaging.instance.onTokenRefresh.listen((_) => _registerDeviceToken());
+
+      // App is open and in the foreground when the message arrives — FCM
+      // won't show a system notification for this case on its own, so we
+      // show one ourselves via flutter_local_notifications.
+      _foregroundMessageSub = FirebaseMessaging.onMessage.listen((message) {
+        final notification = message.notification;
+        if (notification != null) {
+          flutterLocalNotificationsPlugin.show(
+            notification.hashCode,
+            notification.title,
+            notification.body,
+            NotificationDetails(
+              android: AndroidNotificationDetails(
+                _androidNotificationChannel.id,
+                _androidNotificationChannel.name,
+                channelDescription: _androidNotificationChannel.description,
+                importance: Importance.high,
+                priority: Priority.high,
+              ),
+              iOS: const DarwinNotificationDetails(),
+            ),
+          );
+        }
+        // Refresh in-app state too, in case the person is sitting on the ticket screen right now.
+        refreshTicket();
+      });
+
+      // The person tapped a notification and the app opened (from background or terminated).
+      _openedAppMessageSub = FirebaseMessaging.onMessageOpenedApp.listen((_) => refreshTicket());
+      final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
+      if (initialMessage != null) refreshTicket();
+    } catch (e) {
+      debugPrint('Push notification setup failed: $e');
+    }
+  }
+
+  Future<void> _registerDeviceToken() async {
+    final uid = supabase.auth.currentUser?.id;
+    final token = await FirebaseMessaging.instance.getToken();
+    if (uid == null || token == null) return;
+    try {
+      await supabase.from('device_tokens').upsert({
+        'token': token,
+        'user_id': uid,
+        'platform': defaultTargetPlatform.name,
+        'updated_at': DateTime.now().toIso8601String(),
+      });
+    } catch (e) {
+      debugPrint('Failed to register device token: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _foregroundMessageSub?.cancel();
+    _openedAppMessageSub?.cancel();
+    _tokenRefreshSub?.cancel();
+    super.dispose();
   }
 
   // Pulls every shop row + its public stats fresh from Supabase and builds
