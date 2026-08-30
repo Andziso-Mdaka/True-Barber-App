@@ -1,24 +1,17 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'supabase_config.dart';
 import 'firebase_options.dart';
+import 'notification_helper.dart';
 
 final supabase = Supabase.instance.client;
-final flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
-
-const _androidNotificationChannel = AndroidNotificationChannel(
-  'queue_updates', // must match the channel id used when showing notifications
-  'Queue updates',
-  description: "Alerts you when it's your turn at a shop you're queued at.",
-  importance: Importance.high,
-);
 
 // Must be a top-level function — this is what fires when a push notification
 // arrives while the app is fully backgrounded or terminated.
@@ -66,15 +59,7 @@ Future<void> main() async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
-  await flutterLocalNotificationsPlugin
-      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-      ?.createNotificationChannel(_androidNotificationChannel);
-  await flutterLocalNotificationsPlugin.initialize(
-    const InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-      iOS: DarwinInitializationSettings(),
-    ),
-  );
+  await initNotifications();
 
   runApp(const RootApp());
 }
@@ -389,25 +374,22 @@ class _TheRegularAppState extends State<TheRegularApp> {
 
       // App is open and in the foreground when the message arrives — FCM
       // won't show a system notification for this case on its own, so we
-      // show one ourselves via flutter_local_notifications.
+      // show one ourselves (no-op on web — see notification_helper.dart).
       _foregroundMessageSub = FirebaseMessaging.onMessage.listen((message) {
         final notification = message.notification;
         if (notification != null) {
-          flutterLocalNotificationsPlugin.show(
-            notification.hashCode,
-            notification.title,
-            notification.body,
-            NotificationDetails(
-              android: AndroidNotificationDetails(
-                _androidNotificationChannel.id,
-                _androidNotificationChannel.name,
-                channelDescription: _androidNotificationChannel.description,
-                importance: Importance.high,
-                priority: Priority.high,
-              ),
-              iOS: const DarwinNotificationDetails(),
-            ),
+          showLocalNotification(
+            id: notification.hashCode,
+            title: notification.title,
+            body: notification.body,
           );
+          // On web, showLocalNotification is a no-op, so surface it as an
+          // in-app snackbar instead. On mobile/desktop, the system
+          // notification above already covers it — showing both would be
+          // redundant.
+          if (kIsWeb) {
+            showSnack('${notification.title ?? "You're up!"} ${notification.body ?? ""}'.trim());
+          }
         }
         // Refresh in-app state too, in case the person is sitting on the ticket screen right now.
         refreshTicket();
