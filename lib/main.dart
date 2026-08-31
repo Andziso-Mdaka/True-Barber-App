@@ -9,6 +9,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'supabase_config.dart';
 import 'firebase_options.dart';
+import 'firebase_web_config.dart';
 import 'notification_helper.dart';
 
 final supabase = Supabase.instance.client;
@@ -52,8 +53,25 @@ Future<Position?> getCurrentPosition() async {
 }
 final scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
 
+// Checked once, before Supabase.initialize() has a chance to parse (and
+// effectively consume) the URL. Supabase's password reset links include
+// type=recovery either in the query string or the URL fragment depending
+// on the auth flow — checking the raw URL directly sidesteps a race where
+// listening for the live passwordRecovery event can miss it, since that
+// event fires during Supabase.initialize() itself, before any of our
+// widgets (and their listeners) exist yet.
+bool isPasswordRecoveryLink = false;
+
+void _detectPasswordRecoveryLink() {
+  if (!kIsWeb) return;
+  final uri = Uri.base;
+  final fragmentParams = Uri.splitQueryString(uri.fragment);
+  isPasswordRecoveryLink = uri.queryParameters['type'] == 'recovery' || fragmentParams['type'] == 'recovery';
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _detectPasswordRecoveryLink();
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -123,11 +141,35 @@ class AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<AuthGate> {
+  bool showResetPassword = isPasswordRecoveryLink;
+  StreamSubscription<AuthState>? _authSub;
+
+  @override
+  void initState() {
+    super.initState();
+    // Kept as a backup in case the URL-based check above ever misses a
+    // recovery link on some platform/flow variant.
+    _authSub = supabase.auth.onAuthStateChange.listen((data) {
+      if (data.event == AuthChangeEvent.passwordRecovery) {
+        setState(() => showResetPassword = true);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<AuthState>(
       stream: supabase.auth.onAuthStateChange,
       builder: (context, snapshot) {
+        if (showResetPassword) {
+          return ResetPasswordScreen(onDone: () => setState(() => showResetPassword = false));
+        }
         final session = supabase.auth.currentSession;
         if (session == null) return const AuthScreen();
         return const TheRegularApp();
@@ -147,6 +189,7 @@ class _AuthScreenState extends State<AuthScreen> {
   final passwordCtrl = TextEditingController();
   final nameCtrl = TextEditingController();
   bool isSignUp = false;
+  bool isForgotPassword = false;
   bool loading = false;
   String? error;
 
@@ -180,6 +223,36 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
+  Future<void> sendPasswordReset() async {
+    if (emailCtrl.text.trim().isEmpty) {
+      setState(() => error = 'Enter your email first.');
+      return;
+    }
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      await supabase.auth.resetPasswordForEmail(
+        emailCtrl.text.trim(),
+        // On web, send them back to this same app. On mobile this falls back
+        // to Supabase's default redirect since there's no deep link set up
+        // yet to catch it — the link will open in a browser instead of the app.
+        redirectTo: kIsWeb ? Uri.base.origin : null,
+      );
+      if (mounted) {
+        showSnack('Check your email for a password reset link.');
+        setState(() => isForgotPassword = false);
+      }
+    } on AuthException catch (e) {
+      setState(() => error = e.message);
+    } catch (e) {
+      setState(() => error = e.toString());
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -194,50 +267,162 @@ class _AuthScreenState extends State<AuthScreen> {
                 const Text('The Regular',
                     style: TextStyle(color: AppColors.text, fontSize: 26, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 4),
-                Text(isSignUp ? 'Create an account' : 'Welcome back',
-                    style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
-                const SizedBox(height: 24),
-                if (isSignUp) ...[
-                  _Field(label: 'Name', controller: nameCtrl, hint: 'Your name'),
-                ],
-                _Field(label: 'Email', controller: emailCtrl, hint: 'you@example.com'),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('PASSWORD',
-                          style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
-                      const SizedBox(height: 5),
-                      TextField(
-                        controller: passwordCtrl,
-                        obscureText: true,
-                        style: const TextStyle(color: AppColors.text),
-                        decoration: InputDecoration(
-                          hintText: '••••••••',
-                          hintStyle: const TextStyle(color: AppColors.textFaint),
-                          filled: true,
-                          fillColor: AppColors.surface2,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                        ),
-                      ),
-                    ],
-                  ),
+                Text(
+                  isForgotPassword ? 'Reset your password' : (isSignUp ? 'Create an account' : 'Welcome back'),
+                  style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
                 ),
+                const SizedBox(height: 24),
+                if (isForgotPassword) ...[
+                  const Text(
+                    "Enter your email and we'll send you a link to reset your password.",
+                    style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                  ),
+                  const SizedBox(height: 12),
+                  _Field(label: 'Email', controller: emailCtrl, hint: 'you@example.com'),
+                  if (error != null) ...[
+                    Text(error!, style: const TextStyle(color: AppColors.red, fontSize: 12)),
+                    const SizedBox(height: 8),
+                  ],
+                  _PrimaryButton(label: 'Send reset link', loading: loading, onTap: sendPasswordReset),
+                  const SizedBox(height: 12),
+                  TextButton(
+                    onPressed: () => setState(() {
+                      isForgotPassword = false;
+                      error = null;
+                    }),
+                    child: const Text('Back to sign in', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+                  ),
+                ] else ...[
+                  if (isSignUp) ...[
+                    _Field(label: 'Name', controller: nameCtrl, hint: 'Your name'),
+                  ],
+                  _Field(label: 'Email', controller: emailCtrl, hint: 'you@example.com'),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('PASSWORD',
+                            style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+                        const SizedBox(height: 5),
+                        TextField(
+                          controller: passwordCtrl,
+                          obscureText: true,
+                          style: const TextStyle(color: AppColors.text),
+                          decoration: InputDecoration(
+                            hintText: '••••••••',
+                            hintStyle: const TextStyle(color: AppColors.textFaint),
+                            filled: true,
+                            fillColor: AppColors.surface2,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (!isSignUp)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () => setState(() {
+                          isForgotPassword = true;
+                          error = null;
+                        }),
+                        child: const Text('Forgot password?', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+                      ),
+                    ),
+                  if (error != null) ...[
+                    Text(error!, style: const TextStyle(color: AppColors.red, fontSize: 12)),
+                    const SizedBox(height: 8),
+                  ],
+                  _PrimaryButton(label: isSignUp ? 'Sign up' : 'Sign in', loading: loading, onTap: submit),
+                  const SizedBox(height: 12),
+                  TextButton(
+                    onPressed: () => setState(() {
+                      isSignUp = !isSignUp;
+                      error = null;
+                    }),
+                    child: Text(
+                      isSignUp ? 'Already have an account? Sign in' : "New here? Create an account",
+                      style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ResetPasswordScreen extends StatefulWidget {
+  final VoidCallback onDone;
+  const ResetPasswordScreen({super.key, required this.onDone});
+  @override
+  State<ResetPasswordScreen> createState() => _ResetPasswordScreenState();
+}
+
+class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
+  final passwordCtrl = TextEditingController();
+  final confirmCtrl = TextEditingController();
+  bool loading = false;
+  String? error;
+
+  Future<void> submit() async {
+    if (passwordCtrl.text.length < 6) {
+      setState(() => error = 'Password must be at least 6 characters.');
+      return;
+    }
+    if (passwordCtrl.text != confirmCtrl.text) {
+      setState(() => error = "Passwords don't match.");
+      return;
+    }
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      await supabase.auth.updateUser(UserAttributes(password: passwordCtrl.text));
+      if (mounted) {
+        showSnack('Password updated.');
+        widget.onDone();
+      }
+    } on AuthException catch (e) {
+      setState(() => error = e.message);
+    } catch (e) {
+      setState(() => error = e.toString());
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('Set a new password',
+                    style: TextStyle(color: AppColors.text, fontSize: 22, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                const Text("Choose a new password for your account.",
+                    style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                const SizedBox(height: 24),
+                _Field(label: 'New password', controller: passwordCtrl, hint: '••••••••', obscureText: true),
+                _Field(label: 'Confirm password', controller: confirmCtrl, hint: '••••••••', obscureText: true),
                 if (error != null) ...[
                   Text(error!, style: const TextStyle(color: AppColors.red, fontSize: 12)),
                   const SizedBox(height: 8),
                 ],
-                _PrimaryButton(label: isSignUp ? 'Sign up' : 'Sign in', loading: loading, onTap: submit),
-                const SizedBox(height: 12),
-                TextButton(
-                  onPressed: () => setState(() => isSignUp = !isSignUp),
-                  child: Text(
-                    isSignUp ? 'Already have an account? Sign in' : "New here? Create an account",
-                    style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
-                  ),
-                ),
+                _PrimaryButton(label: 'Update password', loading: loading, onTap: submit),
               ],
             ),
           ),
@@ -361,15 +546,20 @@ class _TheRegularAppState extends State<TheRegularApp> {
   StreamSubscription<RemoteMessage>? _openedAppMessageSub;
   StreamSubscription<String>? _tokenRefreshSub;
 
+  bool notificationsEnabled = false;
+  bool checkingNotificationPermission = true;
+
+  // Sets up message listeners (safe to do automatically — doesn't prompt
+  // anything) and checks whether permission was already granted in a past
+  // session, without ever triggering the permission prompt itself.
   Future<void> _setupPushNotifications() async {
     try {
-      final settings = await FirebaseMessaging.instance.requestPermission(alert: true, badge: true, sound: true);
-      if (settings.authorizationStatus == AuthorizationStatus.denied) {
-        debugPrint('Push notifications denied by user.');
-        return;
+      final settings = await FirebaseMessaging.instance.getNotificationSettings();
+      if (settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional) {
+        setState(() => notificationsEnabled = true);
+        await _registerDeviceToken();
       }
-
-      await _registerDeviceToken();
       _tokenRefreshSub = FirebaseMessaging.instance.onTokenRefresh.listen((_) => _registerDeviceToken());
 
       // App is open and in the foreground when the message arrives — FCM
@@ -401,12 +591,37 @@ class _TheRegularAppState extends State<TheRegularApp> {
       if (initialMessage != null) refreshTicket();
     } catch (e) {
       debugPrint('Push notification setup failed: $e');
+    } finally {
+      if (mounted) setState(() => checkingNotificationPermission = false);
+    }
+  }
+
+  // Actually shows the permission prompt — must only be called from a
+  // button tap. Browsers silently suppress this prompt (or show only a
+  // barely-visible icon) if it isn't triggered by a direct user gesture.
+  Future<void> requestNotificationPermission() async {
+    try {
+      final settings = await FirebaseMessaging.instance.requestPermission(alert: true, badge: true, sound: true);
+      final granted = settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional;
+      setState(() => notificationsEnabled = granted);
+      if (granted) {
+        await _registerDeviceToken();
+        showSnack("Notifications enabled — you'll be alerted when it's your turn.");
+      } else {
+        showSnack("Notifications weren't enabled. You can still check your ticket manually.", isError: true);
+      }
+    } catch (e) {
+      showSnack("Couldn't enable notifications right now.", isError: true);
+      debugPrint('Failed to request notification permission: $e');
     }
   }
 
   Future<void> _registerDeviceToken() async {
     final uid = supabase.auth.currentUser?.id;
-    final token = await FirebaseMessaging.instance.getToken();
+    final token = await FirebaseMessaging.instance.getToken(
+      vapidKey: kIsWeb ? webPushVapidKey : null,
+    );
     if (uid == null || token == null) return;
     try {
       await supabase.from('device_tokens').upsert({
@@ -1035,6 +1250,9 @@ class _TheRegularAppState extends State<TheRegularApp> {
                       leavingQueue: leavingQueue,
                       refreshingShops: refreshingShops,
                       onRefreshShops: refreshShops,
+                      notificationsEnabled: notificationsEnabled,
+                      checkingNotificationPermission: checkingNotificationPermission,
+                      onEnableNotifications: requestNotificationPermission,
                       refreshingTicket: refreshingTicket,
                       onRefreshTicket: refreshTicket,
                       onSubscribe: subscribe,
@@ -1441,6 +1659,9 @@ class CustomerFlow extends StatefulWidget {
   final bool leavingQueue;
   final bool refreshingShops;
   final Future<void> Function() onRefreshShops;
+  final bool notificationsEnabled;
+  final bool checkingNotificationPermission;
+  final Future<void> Function() onEnableNotifications;
   final bool refreshingTicket;
   final Future<void> Function() onRefreshTicket;
   final void Function(String shopId) onSubscribe;
@@ -1461,6 +1682,9 @@ class CustomerFlow extends StatefulWidget {
     required this.leavingQueue,
     required this.refreshingShops,
     required this.onRefreshShops,
+    required this.notificationsEnabled,
+    required this.checkingNotificationPermission,
+    required this.onEnableNotifications,
     required this.refreshingTicket,
     required this.onRefreshTicket,
     required this.onSubscribe,
@@ -1532,6 +1756,9 @@ class _CustomerFlowState extends State<CustomerFlow> {
         onOpen: (s) => setState(() => openedShop = s),
         refreshingShops: widget.refreshingShops,
         onRefreshShops: widget.onRefreshShops,
+        notificationsEnabled: widget.notificationsEnabled,
+        checkingNotificationPermission: widget.checkingNotificationPermission,
+        onEnableNotifications: widget.onEnableNotifications,
       );
     }
 
@@ -1577,12 +1804,18 @@ class ShopListScreen extends StatelessWidget {
   final void Function(Shop) onOpen;
   final bool refreshingShops;
   final Future<void> Function() onRefreshShops;
+  final bool notificationsEnabled;
+  final bool checkingNotificationPermission;
+  final Future<void> Function() onEnableNotifications;
   const ShopListScreen({
     super.key,
     required this.shops,
     required this.onOpen,
     required this.refreshingShops,
     required this.onRefreshShops,
+    required this.notificationsEnabled,
+    required this.checkingNotificationPermission,
+    required this.onEnableNotifications,
   });
 
   @override
@@ -1594,6 +1827,34 @@ class ShopListScreen extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (!checkingNotificationPermission && !notificationsEnabled)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.brass.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.brass.withOpacity(0.4)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.notifications_none, color: AppColors.brass, size: 18),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text('Get notified the moment your barber calls you',
+                            style: TextStyle(color: AppColors.text, fontSize: 13, fontWeight: FontWeight.w600)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  _OutlineButton(label: 'Enable notifications', onTap: onEnableNotifications),
+                ],
+              ),
+            ),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -2493,7 +2754,14 @@ class _Field extends StatelessWidget {
   final TextEditingController controller;
   final String hint;
   final bool numeric;
-  const _Field({required this.label, required this.controller, required this.hint, this.numeric = false});
+  final bool obscureText;
+  const _Field({
+    required this.label,
+    required this.controller,
+    required this.hint,
+    this.numeric = false,
+    this.obscureText = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2507,6 +2775,7 @@ class _Field extends StatelessWidget {
           TextField(
             controller: controller,
             keyboardType: numeric ? TextInputType.number : TextInputType.text,
+            obscureText: obscureText,
             style: const TextStyle(color: AppColors.text),
             decoration: InputDecoration(
               hintText: hint,
