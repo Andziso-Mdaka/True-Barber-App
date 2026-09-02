@@ -600,20 +600,26 @@ class _TheRegularAppState extends State<TheRegularApp> {
   // button tap. Browsers silently suppress this prompt (or show only a
   // barely-visible icon) if it isn't triggered by a direct user gesture.
   Future<void> requestNotificationPermission() async {
+    debugPrint('[push] Enable notifications tapped');
     try {
+      debugPrint('[push] calling requestPermission...');
       final settings = await FirebaseMessaging.instance.requestPermission(alert: true, badge: true, sound: true);
+      debugPrint('[push] requestPermission returned: ${settings.authorizationStatus}');
       final granted = settings.authorizationStatus == AuthorizationStatus.authorized ||
           settings.authorizationStatus == AuthorizationStatus.provisional;
       setState(() => notificationsEnabled = granted);
       if (granted) {
+        debugPrint('[push] granted, registering device token...');
         await _registerDeviceToken();
+        debugPrint('[push] device token registered');
         showSnack("Notifications enabled — you'll be alerted when it's your turn.");
       } else {
         showSnack("Notifications weren't enabled. You can still check your ticket manually.", isError: true);
       }
-    } catch (e) {
+    } catch (e, st) {
       showSnack("Couldn't enable notifications right now.", isError: true);
-      debugPrint('Failed to request notification permission: $e');
+      debugPrint('[push] FAILED: $e');
+      debugPrint('[push] stack: $st');
     }
   }
 
@@ -1742,6 +1748,9 @@ class _CustomerFlowState extends State<CustomerFlow> {
         shops: widget.shops.where((s) => widget.mySubShopIds.contains(s.id)).toList(),
         cancellingShopId: widget.cancellingShopId,
         onCancel: widget.onCancelSubscription,
+        notificationsEnabled: widget.notificationsEnabled,
+        checkingNotificationPermission: widget.checkingNotificationPermission,
+        onEnableNotifications: widget.onEnableNotifications,
       );
     } else if (tab == 3) {
       body = ShopMapScreen(
@@ -1756,9 +1765,6 @@ class _CustomerFlowState extends State<CustomerFlow> {
         onOpen: (s) => setState(() => openedShop = s),
         refreshingShops: widget.refreshingShops,
         onRefreshShops: widget.onRefreshShops,
-        notificationsEnabled: widget.notificationsEnabled,
-        checkingNotificationPermission: widget.checkingNotificationPermission,
-        onEnableNotifications: widget.onEnableNotifications,
       );
     }
 
@@ -1804,18 +1810,12 @@ class ShopListScreen extends StatelessWidget {
   final void Function(Shop) onOpen;
   final bool refreshingShops;
   final Future<void> Function() onRefreshShops;
-  final bool notificationsEnabled;
-  final bool checkingNotificationPermission;
-  final Future<void> Function() onEnableNotifications;
   const ShopListScreen({
     super.key,
     required this.shops,
     required this.onOpen,
     required this.refreshingShops,
     required this.onRefreshShops,
-    required this.notificationsEnabled,
-    required this.checkingNotificationPermission,
-    required this.onEnableNotifications,
   });
 
   @override
@@ -1827,34 +1827,6 @@ class ShopListScreen extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (!checkingNotificationPermission && !notificationsEnabled)
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 16),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.brass.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppColors.brass.withOpacity(0.4)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.notifications_none, color: AppColors.brass, size: 18),
-                      const SizedBox(width: 8),
-                      const Expanded(
-                        child: Text('Get notified the moment your barber calls you',
-                            style: TextStyle(color: AppColors.text, fontSize: 13, fontWeight: FontWeight.w600)),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  _OutlineButton(label: 'Enable notifications', onTap: onEnableNotifications),
-                ],
-              ),
-            ),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -2338,50 +2310,87 @@ class AccountScreen extends StatelessWidget {
   final List<Shop> shops;
   final String? cancellingShopId;
   final void Function(String shopId) onCancel;
-  const AccountScreen({super.key, required this.shops, required this.cancellingShopId, required this.onCancel});
+  final bool notificationsEnabled;
+  final bool checkingNotificationPermission;
+  final Future<void> Function() onEnableNotifications;
+  const AccountScreen({
+    super.key,
+    required this.shops,
+    required this.cancellingShopId,
+    required this.onCancel,
+    required this.notificationsEnabled,
+    required this.checkingNotificationPermission,
+    required this.onEnableNotifications,
+  });
 
   @override
   Widget build(BuildContext context) {
-    if (shops.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.all(16),
-        child: Text("No active subscriptions yet. Find a shop from the home tab to get started.",
-            style: TextStyle(color: AppColors.textFaint, fontSize: 13)),
-      );
-    }
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text(
-          shops.length == 1 ? 'Active subscription' : '${shops.length} active subscriptions',
-          style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
-        ),
-        const SizedBox(height: 12),
-        for (final shop in shops)
+        if (!checkingNotificationPermission && !notificationsEnabled)
           Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.all(16),
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 16),
+            padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.line),
+              color: AppColors.brass.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.brass.withOpacity(0.4)),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(shop.name, style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 2),
-                Text('${shop.area} · R${shop.price}/mo', style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
-                const SizedBox(height: 14),
-                _OutlineButton(
-                  label: 'Cancel subscription',
-                  color: AppColors.red,
-                  onTap: () => onCancel(shop.id),
-                  loading: cancellingShopId == shop.id,
+                Row(
+                  children: [
+                    const Icon(Icons.notifications_none, color: AppColors.brass, size: 18),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text('Get notified the moment your barber calls you',
+                          style: TextStyle(color: AppColors.text, fontSize: 13, fontWeight: FontWeight.w600)),
+                    ),
+                  ],
                 ),
+                const SizedBox(height: 10),
+                _OutlineButton(label: 'Enable notifications', onTap: onEnableNotifications),
               ],
             ),
           ),
+        if (shops.isEmpty)
+          const Text("No active subscriptions yet. Find a shop from the home tab to get started.",
+              style: TextStyle(color: AppColors.textFaint, fontSize: 13))
+        else ...[
+          Text(
+            shops.length == 1 ? 'Active subscription' : '${shops.length} active subscriptions',
+            style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          for (final shop in shops)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.line),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(shop.name, style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 2),
+                  Text('${shop.area} · R${shop.price}/mo', style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                  const SizedBox(height: 14),
+                  _OutlineButton(
+                    label: 'Cancel subscription',
+                    color: AppColors.red,
+                    onTap: () => onCancel(shop.id),
+                    loading: cancellingShopId == shop.id,
+                  ),
+                ],
+              ),
+            ),
+        ],
       ],
     );
   }
