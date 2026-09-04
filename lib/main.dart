@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'supabase_config.dart';
@@ -821,18 +822,37 @@ class _TheRegularAppState extends State<TheRegularApp> {
   Future<void> subscribe(String shopId) async {
     final uid = supabase.auth.currentUser?.id;
     if (uid == null) return;
-    final shopName = shops.firstWhere((s) => s.id == shopId).name;
     setState(() => subscribing = true);
     try {
-      await supabase.from('subscriptions').insert({'shop_id': shopId, 'customer_id': uid});
-      setState(() {
-        mySubShopIds = {...mySubShopIds, shopId};
-        shops.firstWhere((s) => s.id == shopId).subscriberCount += 1;
-      });
-      showSnack("You're subscribed to $shopName");
+      // Mobile has no deep link set up yet to catch the return_url, so this
+      // redirect flow is really only end-to-end testable on web right now —
+      // on mobile the person would land on a plain web page, not back in the app.
+      final origin = kIsWeb ? Uri.base.origin : 'https://example.com';
+      final response = await supabase.functions.invoke(
+        'create-payfast-checkout',
+        body: {'shop_id': shopId, 'return_url': origin, 'cancel_url': origin},
+      );
+      final checkoutUrl = response.data is Map ? response.data['checkout_url'] as String? : null;
+      if (checkoutUrl == null) {
+        throw Exception('No checkout URL returned: ${response.data}');
+      }
+      debugPrint('[payfast] checkout URL: $checkoutUrl');
+      final launched = await launchUrl(
+        Uri.parse(checkoutUrl),
+        webOnlyWindowName: kIsWeb ? '_self' : null,
+        mode: kIsWeb ? LaunchMode.platformDefault : LaunchMode.externalApplication,
+      );
+      if (!launched) {
+        showSnack("Couldn't open the payment page.", isError: true);
+      }
+      // Deliberately NOT updating mySubShopIds or subscriberCount here — the
+      // subscription only becomes real once PayFast's webhook confirms the
+      // payment, which happens after the person completes checkout and
+      // returns. On web that return is a full page reload, which re-fetches
+      // everything fresh via _loadInitialData().
     } catch (e) {
-      showSnack("Couldn't subscribe. Please try again.", isError: true);
-      debugPrint('Failed to subscribe: $e');
+      showSnack("Couldn't start checkout. Please try again.", isError: true);
+      debugPrint('Failed to start PayFast checkout: $e');
     } finally {
       if (mounted) setState(() => subscribing = false);
     }
@@ -843,12 +863,13 @@ class _TheRegularAppState extends State<TheRegularApp> {
     if (uid == null || !mySubShopIds.contains(shopId)) return;
     setState(() => cancellingShopId = shopId);
     try {
-      await supabase
-          .from('subscriptions')
-          .update({'status': 'cancelled', 'cancelled_at': DateTime.now().toIso8601String()})
-          .eq('shop_id', shopId)
-          .eq('customer_id', uid)
-          .eq('status', 'active');
+      final response = await supabase.functions.invoke(
+        'cancel-payfast-subscription',
+        body: {'shop_id': shopId},
+      );
+      if (response.status != 200) {
+        throw Exception('Cancel failed: ${response.data}');
+      }
       setState(() {
         shops.firstWhere((s) => s.id == shopId).subscriberCount -= 1;
         mySubShopIds = {...mySubShopIds}..remove(shopId);
@@ -2219,8 +2240,12 @@ class ShopDetailScreen extends StatelessWidget {
           _PrimaryButton(label: 'Walk in now', onTap: onWalkIn, loading: joiningQueue, disabled: queuedElsewhere),
           const SizedBox(height: 10),
           _OutlineButton(label: 'Cancel subscription', color: AppColors.red, onTap: onCancel, loading: cancelling),
-        ] else
+        ] else ...[
           _PrimaryButton(label: 'Subscribe — R${shop.price}/month', onTap: onSubscribe, loading: subscribing),
+          const SizedBox(height: 8),
+          const Text("You'll be taken to PayFast to complete payment securely.",
+              style: TextStyle(color: AppColors.textFaint, fontSize: 11)),
+        ],
       ],
     );
   }

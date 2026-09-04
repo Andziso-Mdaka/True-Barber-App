@@ -46,10 +46,29 @@ function buildSignature(params: Record<string, string>, passphrase: string): str
   return md5(parts.join("&"));
 }
 
+// Browsers send a CORS preflight (OPTIONS) before the real request when
+// calling a cross-origin endpoint like this one from Flutter web. Without
+// these headers, the browser blocks the call entirely before it even
+// reaches our code — which shows up client-side as a bare "Failed to
+// fetch" with no useful status code.
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -61,13 +80,19 @@ Deno.serve(async (req) => {
 
     const { data: userData, error: userError } = await supabase.auth.getUser();
     if (userError || !userData.user) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
     const user = userData.user;
 
     const { shop_id, return_url, cancel_url } = await req.json();
     if (!shop_id || !return_url || !cancel_url) {
-      return new Response(JSON.stringify({ error: "shop_id, return_url and cancel_url are required" }), { status: 400 });
+      return new Response(JSON.stringify({ error: "shop_id, return_url and cancel_url are required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const { data: shop, error: shopError } = await supabase
@@ -76,7 +101,10 @@ Deno.serve(async (req) => {
       .eq("id", shop_id)
       .single();
     if (shopError || !shop) {
-      return new Response(JSON.stringify({ error: "Shop not found" }), { status: 404 });
+      return new Response(JSON.stringify({ error: "Shop not found" }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const { data: profile } = await supabase.from("profiles").select("full_name").eq("id", user.id).maybeSingle();
@@ -125,10 +153,13 @@ Deno.serve(async (req) => {
 
     return new Response(JSON.stringify({ checkout_url: checkoutUrl }), {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
     console.error(e);
-    return new Response(JSON.stringify({ error: String(e) }), { status: 500 });
+    return new Response(JSON.stringify({ error: String(e) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
