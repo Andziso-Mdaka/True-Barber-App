@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'supabase_config.dart';
@@ -482,6 +483,7 @@ class Shop {
   double? latitude;
   double? longitude;
   String status;
+  String? photoUrl;
   List<String> subscribers;
   List<QueueEntry> queue;
   List<Barber> staff;
@@ -501,6 +503,7 @@ class Shop {
     this.latitude,
     this.longitude,
     this.status = 'pending',
+    this.photoUrl,
     required this.subscribers,
     required this.queue,
     List<Barber>? staff,
@@ -671,6 +674,7 @@ class _TheRegularAppState extends State<TheRegularApp> {
           latitude: (row['latitude'] as num?)?.toDouble(),
           longitude: (row['longitude'] as num?)?.toDouble(),
           status: row['status'] as String? ?? 'pending',
+          photoUrl: row['photo_url'] as String?,
           subscribers: [],
           queue: [],
           nextTicket: row['next_ticket'] as int,
@@ -1076,6 +1080,43 @@ class _TheRegularAppState extends State<TheRegularApp> {
     }
   }
 
+  bool uploadingPhoto = false;
+
+  Future<void> uploadShopPhoto() async {
+    if (ownerShop == null) return;
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(source: ImageSource.gallery, maxWidth: 1600, imageQuality: 85);
+    if (picked == null) return;
+
+    setState(() => uploadingPhoto = true);
+    try {
+      final bytes = await picked.readAsBytes();
+      // One canonical filename per shop — re-uploading just replaces it.
+      final ext = picked.name.contains('.') ? picked.name.split('.').last : 'jpg';
+      final path = '${ownerShop!.id}/cover.$ext';
+
+      await supabase.storage.from('shop-photos').uploadBinary(
+            path,
+            bytes,
+            fileOptions: const FileOptions(upsert: true),
+          );
+
+      // Cache-bust: without this, browsers/CDNs may keep showing the old
+      // image at the same URL after a re-upload.
+      final publicUrl = supabase.storage.from('shop-photos').getPublicUrl(path);
+      final bustedUrl = '$publicUrl?t=${DateTime.now().millisecondsSinceEpoch}';
+
+      await supabase.from('shops').update({'photo_url': bustedUrl}).eq('id', ownerShop!.id);
+      setState(() => ownerShop!.photoUrl = bustedUrl);
+      showSnack('Photo updated');
+    } catch (e) {
+      showSnack("Couldn't upload photo. Please try again.", isError: true);
+      debugPrint('Failed to upload shop photo: $e');
+    } finally {
+      if (mounted) setState(() => uploadingPhoto = false);
+    }
+  }
+
   bool refreshingQueue = false;
 
   Future<void> refreshOwnerShop() async {
@@ -1264,6 +1305,8 @@ class _TheRegularAppState extends State<TheRegularApp> {
                       onRemoveBarber: removeBarber,
                       onToggleBarberActive: toggleBarberActive,
                       onUpdateLocation: updateShopLocation,
+                      onUploadPhoto: uploadShopPhoto,
+                      uploadingPhoto: uploadingPhoto,
                     )
                   : CustomerFlow(
                       shops: shops,
@@ -2129,7 +2172,7 @@ class _ShopCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(10),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
+        clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(10),
@@ -2138,34 +2181,50 @@ class _ShopCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(shop.name,
-                    style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
-                if (shop.isMine)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(color: AppColors.brass, borderRadius: BorderRadius.circular(4)),
-                    child: const Text('YOURS',
-                        style: TextStyle(color: AppColors.bg, fontSize: 10, fontWeight: FontWeight.bold)),
+            if (shop.photoUrl != null)
+              Image.network(
+                shop.photoUrl!,
+                height: 120,
+                width: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stack) => const SizedBox.shrink(),
+              ),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(shop.name,
+                          style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
+                      if (shop.isMine)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(color: AppColors.brass, borderRadius: BorderRadius.circular(4)),
+                          child: const Text('YOURS',
+                              style: TextStyle(color: AppColors.bg, fontSize: 10, fontWeight: FontWeight.bold)),
+                        ),
+                    ],
                   ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text('${shop.area} · ${shop.chairs} chairs · ${shop.rating}★',
-                style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('R${shop.price}/mo · unlimited cuts',
-                    style: const TextStyle(color: AppColors.brass, fontSize: 13, fontWeight: FontWeight.w600)),
-                Text(
-                  shop.queueCount == 0 ? 'No wait' : '${shop.queueCount} in queue',
-                  style: TextStyle(color: shop.queueCount == 0 ? AppColors.textFaint : AppColors.text, fontSize: 13),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  Text('${shop.area} · ${shop.chairs} chairs · ${shop.rating}★',
+                      style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('R${shop.price}/mo · unlimited cuts',
+                          style: const TextStyle(color: AppColors.brass, fontSize: 13, fontWeight: FontWeight.w600)),
+                      Text(
+                        shop.queueCount == 0 ? 'No wait' : '${shop.queueCount} in queue',
+                        style: TextStyle(color: shop.queueCount == 0 ? AppColors.textFaint : AppColors.text, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -2209,6 +2268,19 @@ class ShopDetailScreen extends StatelessWidget {
           IconButton(icon: const Icon(Icons.chevron_left, color: AppColors.textMuted), onPressed: onBack),
           Text(shop.name, style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
         ]),
+        if (shop.photoUrl != null) ...[
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.network(
+              shop.photoUrl!,
+              height: 160,
+              width: double.infinity,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stack) => const SizedBox.shrink(),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
         Text('${shop.area} · ${shop.chairs} chairs · ${shop.rating}★',
             style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
         const SizedBox(height: 14),
@@ -2436,6 +2508,8 @@ class OwnerFlow extends StatefulWidget {
   final void Function(String barberId) onRemoveBarber;
   final void Function(String barberId) onToggleBarberActive;
   final void Function(LatLng location) onUpdateLocation;
+  final Future<void> Function() onUploadPhoto;
+  final bool uploadingPhoto;
 
   const OwnerFlow({
     super.key,
@@ -2451,6 +2525,8 @@ class OwnerFlow extends StatefulWidget {
     required this.onRemoveBarber,
     required this.onToggleBarberActive,
     required this.onUpdateLocation,
+    required this.onUploadPhoto,
+    required this.uploadingPhoto,
   });
 
   @override
@@ -2569,6 +2645,56 @@ class _OwnerFlowState extends State<OwnerFlow> {
             ),
           ),
         ],
+        InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: widget.uploadingPhoto ? null : widget.onUploadPhoto,
+          child: Container(
+            width: double.infinity,
+            height: 140,
+            margin: const EdgeInsets.only(bottom: 16),
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: AppColors.surface2,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.line),
+              image: shop.photoUrl != null
+                  ? DecorationImage(image: NetworkImage(shop.photoUrl!), fit: BoxFit.cover)
+                  : null,
+            ),
+            child: Stack(
+              children: [
+                if (shop.photoUrl == null)
+                  const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add_a_photo_outlined, color: AppColors.textMuted, size: 26),
+                        SizedBox(height: 6),
+                        Text('Add a shop photo', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                if (widget.uploadingPhoto)
+                  Container(
+                    color: Colors.black.withOpacity(0.4),
+                    child: const Center(
+                      child: CircularProgressIndicator(color: AppColors.brass),
+                    ),
+                  )
+                else if (shop.photoUrl != null)
+                  Positioned(
+                    right: 8,
+                    bottom: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                      decoration: BoxDecoration(color: AppColors.bg.withOpacity(0.75), borderRadius: BorderRadius.circular(6)),
+                      child: const Text('Change photo', style: TextStyle(color: AppColors.text, fontSize: 11, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [

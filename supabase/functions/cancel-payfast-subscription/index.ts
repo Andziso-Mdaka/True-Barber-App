@@ -23,15 +23,17 @@ function pfEncode(value: string): string {
 // passphrase. This is genuinely different from the checkout signature's
 // fixed field order — easy to mix up, so worth the explicit comment.
 function buildApiSignature(params: Record<string, string>, passphrase: string): string {
-  const keys = Object.keys(params).sort();
-  const parts = keys.map((k) => `${k}=${pfEncode(params[k])}`);
-  parts.push(`passphrase=${pfEncode(passphrase)}`);
+  const allParams = { ...params, passphrase };
+  const keys = Object.keys(allParams).sort();
+  const parts = keys.map((k) => `${k}=${pfEncode(allParams[k])}`);
   return md5(parts.join("&"));
 }
 
 function payfastTimestamp(): string {
-  // PayFast wants YYYY-MM-DDTHH:MM:SS+HH:MM — no milliseconds. We report in UTC.
-  return new Date().toISOString().slice(0, 19) + "+00:00";
+  // PayFast's docs show this format as YYYY-MM-DDTHH:MM:SS[+HH:MM] — but
+  // their own worked example has no offset at all ("2020-03-23T09:46:06"),
+  // meaning the offset is optional and best left off rather than guessed at.
+  return new Date().toISOString().slice(0, 19);
 }
 
 Deno.serve(async (req) => {
@@ -94,10 +96,11 @@ Deno.serve(async (req) => {
       const payfastCheckoutUrl = Deno.env.get("PAYFAST_URL")!;
       const isSandbox = payfastCheckoutUrl.includes("sandbox");
 
+      const timestamp = payfastTimestamp();
       const headerParams: Record<string, string> = {
         "merchant-id": merchantId,
         "version": "v1",
-        "timestamp": payfastTimestamp(),
+        "timestamp": timestamp,
       };
       const signature = buildApiSignature(headerParams, passphrase);
 
@@ -108,7 +111,7 @@ Deno.serve(async (req) => {
         headers: {
           "merchant-id": merchantId,
           "version": "v1",
-          "timestamp": headerParams.timestamp,
+          "timestamp": timestamp,
           "signature": signature,
         },
       });
