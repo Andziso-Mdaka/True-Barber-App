@@ -5,7 +5,7 @@ import 'review.dart';
 class Shop {
   final String id;
   final String ownerId;
-  final List<String> services;
+  List<String> services;
   String name;
   String area;
   int price;

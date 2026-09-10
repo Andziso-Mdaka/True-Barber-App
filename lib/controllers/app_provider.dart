@@ -676,5 +676,41 @@ class AppProvider extends ChangeNotifier {
       debugPrint('Review failed: $e');
     }
   }
+
+  Future<void> addService(String service) async {
+    if (ownerShop == null || service.trim().isEmpty) return;
+    final cleanService = service.trim();
+    
+    // Prevent duplicates
+    if (ownerShop!.services.contains(cleanService)) return;
+
+    // Create a new array with the added service
+    final newServices = List<String>.from(ownerShop!.services)..add(cleanService);
+    
+    try {
+      await supabase.from('shops').update({'services': newServices}).eq('id', ownerShop!.id);
+      ownerShop!.services = newServices;
+      notifyListeners();
+    } catch (e) {
+      showSnack("Couldn't add service.", isError: true);
+      debugPrint('Failed to add service: $e');
+    }
+  }
+
+  Future<void> removeService(String service) async {
+    if (ownerShop == null) return;
+    
+    // Create a new array without the target service
+    final newServices = List<String>.from(ownerShop!.services)..remove(service);
+    
+    try {
+      await supabase.from('shops').update({'services': newServices}).eq('id', ownerShop!.id);
+      ownerShop!.services = newServices;
+      notifyListeners();
+    } catch (e) {
+      showSnack("Couldn't remove service.", isError: true);
+      debugPrint('Failed to remove service: $e');
+    }
+  }
 }
 

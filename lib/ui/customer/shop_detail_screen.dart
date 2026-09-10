@@ -195,7 +195,11 @@ class ShopDetailScreen extends StatelessWidget {
                       children: [
                         const Icon(Icons.star, color: AppColors.brass, size: 14),
                         const SizedBox(width: 4),
-                        Text(currentShop.rating.toStringAsFixed(1), style: const TextStyle(color: AppColors.brass, fontWeight: FontWeight.bold, fontSize: 13)),
+                        // We added the review count in parentheses right here!
+                        Text(
+                          '${currentShop.rating.toStringAsFixed(1)} (${currentShop.reviews.length})', 
+                          style: const TextStyle(color: AppColors.brass, fontWeight: FontWeight.bold, fontSize: 13)
+                        ),
                       ],
                     ),
                   ),

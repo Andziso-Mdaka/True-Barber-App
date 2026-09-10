@@ -24,6 +24,7 @@ class _OwnerFlowState extends State<OwnerFlow> {
   final chairsCtrl = TextEditingController();
   LatLng? pickedLocation;
   final newBarberCtrl = TextEditingController();
+  final newServiceCtrl = TextEditingController();
   bool showStaff = false;
 
   @override
@@ -217,7 +218,75 @@ class _OwnerFlowState extends State<OwnerFlow> {
               },
             ),
           ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 24),
+        
+        const Text('SERVICES', style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: newServiceCtrl,
+                style: const TextStyle(color: AppColors.text),
+                decoration: InputDecoration(
+                  hintText: 'e.g. Skin Fade',
+                  hintStyle: const TextStyle(color: AppColors.textFaint),
+                  filled: true,
+                  fillColor: AppColors.surface2,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                ),
+                onSubmitted: (_) {
+                  provider.addService(newServiceCtrl.text);
+                  newServiceCtrl.clear();
+                },
+              ),
+            ),
+            const SizedBox(width: 10),
+            ElevatedButton(
+              onPressed: () {
+                provider.addService(newServiceCtrl.text);
+                newServiceCtrl.clear();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.brass,
+                foregroundColor: AppColors.bg,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Add', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (shop.services.isEmpty)
+          const Text("Add some services so customers know what you offer.", style: TextStyle(color: AppColors.textFaint, fontSize: 13))
+        else
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: shop.services.map((service) => Container(
+              padding: const EdgeInsets.only(left: 10, right: 4, top: 4, bottom: 4),
+              decoration: BoxDecoration(
+                color: AppColors.surface2,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: AppColors.line),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(service, style: const TextStyle(color: AppColors.text, fontSize: 13)),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () => provider.removeService(service),
+                    child: const Icon(Icons.close, color: AppColors.textMuted, size: 18),
+                  ),
+                ],
+              ),
+            )).toList(),
+          ),
+        const SizedBox(height: 24),
+
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
