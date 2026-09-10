@@ -5,6 +5,7 @@ import 'review.dart';
 class Shop {
   final String id;
   final String ownerId;
+  final List<String> services;
   String name;
   String area;
   int price;
@@ -32,6 +33,7 @@ class Shop {
     required this.price,
     required this.chairs,
     required this.rating,
+    required this.services,
     this.latitude,
     this.longitude,
     this.status = 'pending',

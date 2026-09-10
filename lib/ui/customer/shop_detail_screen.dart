@@ -95,8 +95,12 @@ class ShopDetailScreen extends StatelessWidget {
       ),
     );
   }
+
   @override
   Widget build(BuildContext context) {
+    // Tells the UI to listen for real-time updates for this specific shop
+    final currentShop = context.watch<AppProvider>().shops.firstWhere((s) => s.id == shop.id, orElse: () => shop);
+    
     return Column(
       children: [
         SafeArea(
@@ -111,7 +115,7 @@ class ShopDetailScreen extends StatelessWidget {
                 ),
                 Expanded(
                   child: Text(
-                    shop.name,
+                    currentShop.name,
                     style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -132,16 +136,16 @@ class ShopDetailScreen extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: AppColors.surface2,
                   borderRadius: BorderRadius.circular(12),
-                  image: shop.photoUrl != null
-                      ? DecorationImage(image: NetworkImage(shop.photoUrl!), fit: BoxFit.cover)
+                  image: currentShop.photoUrl != null
+                      ? DecorationImage(image: NetworkImage(currentShop.photoUrl!), fit: BoxFit.cover)
                       : null,
                 ),
-                child: shop.photoUrl == null
+                child: currentShop.photoUrl == null
                     ? const Center(child: Icon(Icons.storefront_outlined, color: AppColors.textMuted, size: 48))
                     : null,
               ),
               
-              if (shop.portfolioUrls.isNotEmpty) ...[
+              if (currentShop.portfolioUrls.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 const Text("PORTFOLIO", style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
                 const SizedBox(height: 8),
@@ -149,7 +153,7 @@ class ShopDetailScreen extends StatelessWidget {
                   height: 80,
                   child: ListView.builder(
                     scrollDirection: Axis.horizontal,
-                    itemCount: shop.portfolioUrls.length,
+                    itemCount: currentShop.portfolioUrls.length,
                     itemBuilder: (context, i) {
                       return Container(
                         width: 80,
@@ -157,7 +161,7 @@ class ShopDetailScreen extends StatelessWidget {
                         clipBehavior: Clip.antiAlias,
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(6),
-                          image: DecorationImage(image: NetworkImage(shop.portfolioUrls[i]), fit: BoxFit.cover),
+                          image: DecorationImage(image: NetworkImage(currentShop.portfolioUrls[i]), fit: BoxFit.cover),
                         ),
                       );
                     },
@@ -174,9 +178,9 @@ class ShopDetailScreen extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(shop.name, style: const TextStyle(color: AppColors.text, fontSize: 24, fontWeight: FontWeight.bold)),
+                        Text(currentShop.name, style: const TextStyle(color: AppColors.text, fontSize: 24, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 4),
-                        Text('${shop.area} · ${shop.chairs} chairs', style: const TextStyle(color: AppColors.textMuted, fontSize: 14)),
+                        Text('${currentShop.area} · ${currentShop.chairs} chairs', style: const TextStyle(color: AppColors.textMuted, fontSize: 14)),
                       ],
                     ),
                   ),
@@ -191,7 +195,7 @@ class ShopDetailScreen extends StatelessWidget {
                       children: [
                         const Icon(Icons.star, color: AppColors.brass, size: 14),
                         const SizedBox(width: 4),
-                        Text(shop.rating.toStringAsFixed(1), style: const TextStyle(color: AppColors.brass, fontWeight: FontWeight.bold, fontSize: 13)),
+                        Text(currentShop.rating.toStringAsFixed(1), style: const TextStyle(color: AppColors.brass, fontWeight: FontWeight.bold, fontSize: 13)),
                       ],
                     ),
                   ),
@@ -220,7 +224,7 @@ class ShopDetailScreen extends StatelessWidget {
                       PrimaryButton(
                         label: 'Walk in',
                         loading: joiningQueue,
-                   onTap: queuedElsewhere ? () {} : onWalkIn,
+                        onTap: queuedElsewhere ? () {} : onWalkIn,
                       ),
                       if (queuedElsewhere)
                         const Padding(
@@ -237,7 +241,7 @@ class ShopDetailScreen extends StatelessWidget {
                   ),
                 ),
               ] else ...[
-                Text('R${shop.price} / month', style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
+                Text('R${currentShop.price} / month', style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 4),
                 const Text('Unlimited walk-ins. No booking required.', style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
                 const SizedBox(height: 16),
@@ -249,21 +253,41 @@ class ShopDetailScreen extends StatelessWidget {
               ],
               
               const SizedBox(height: 32),
+              
+              if (currentShop.services.isNotEmpty) ...[
+                const Text("SERVICES", style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: currentShop.services.map((service) => Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface2,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: AppColors.line),
+                    ),
+                    child: Text(service, style: const TextStyle(color: AppColors.text, fontSize: 13)),
+                  )).toList(),
+                ),
+                const SizedBox(height: 24),
+              ],
+
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text("REVIEWS", style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
                   GestureDetector(
-                    onTap: () => _showReviewDialog(context, shop.id),
+                    onTap: () => _showReviewDialog(context, currentShop.id),
                     child: const Text('Write a review', style: TextStyle(color: AppColors.brass, fontSize: 12, fontWeight: FontWeight.bold)),
                   ),
                 ],
               ),
               const SizedBox(height: 12),
-              if (shop.reviews.isEmpty)
+              if (currentShop.reviews.isEmpty)
                 const Text("No reviews yet. Be the first to leave one!", style: TextStyle(color: AppColors.textFaint, fontSize: 12))
               else
-                ...shop.reviews.map((r) => Container(
+                ...currentShop.reviews.map((r) => Container(
                   margin: const EdgeInsets.only(bottom: 12),
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -274,21 +298,27 @@ class ShopDetailScreen extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          ...List.generate(5, (index) => Icon(
-                            index < r.rating ? Icons.star : Icons.star_border,
-                            color: AppColors.brass,
-                            size: 14,
-                          )),
-                          const SizedBox(width: 8),
+                          Row(
+                            children: [
+                              ...List.generate(5, (index) => Icon(
+                                index < r.rating ? Icons.star : Icons.star_border,
+                                color: AppColors.brass,
+                                size: 14,
+                              )),
+                            ],
+                          ),
                           Text(
                             '${r.createdAt.day}/${r.createdAt.month}/${r.createdAt.year}', 
                             style: const TextStyle(color: AppColors.textFaint, fontSize: 10)
                           ),
                         ],
                       ),
+                      const SizedBox(height: 6),
+                      Text(r.customerName, style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 12)),
                       if (r.comment != null && r.comment!.isNotEmpty) ...[
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 4),
                         Text(r.comment!, style: const TextStyle(color: AppColors.text, fontSize: 13)),
                       ]
                     ],

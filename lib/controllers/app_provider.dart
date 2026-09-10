@@ -140,12 +140,15 @@ class AppProvider extends ChangeNotifier {
     final shopRows = await supabase.from('shops').select();
     final statsRows = await supabase.from('shop_stats').select();
     final statsById = {for (final r in statsRows) r['shop_id'] as String: r};
-    final reviewRows = await supabase.from('reviews').select().order('created_at', ascending: false);
+    // Notice the select() now joins the profiles table
+    final reviewRows = await supabase.from('reviews').select('*, profiles(full_name)').order('created_at', ascending: false);
     final reviewsByShop = <String, List<Review>>{};
     for (final r in reviewRows) {
       final rev = Review(
         id: r['id'] as String,
         customerId: r['customer_id'] as String,
+        // Grab the joined profile name
+        customerName: r['profiles'] != null ? r['profiles']['full_name'] as String? ?? 'Regular' : 'Regular',
         rating: r['rating'] as int,
         comment: r['comment'] as String?,
         createdAt: DateTime.parse(r['created_at'] as String),
@@ -169,6 +172,7 @@ class AppProvider extends ChangeNotifier {
           photoUrl: row['photo_url'] as String?,
           portfolioUrls: List<String>.from(row['portfolio_urls'] ?? []),
           reviews: reviewsByShop[row['id']] ?? [],
+          services: List<String>.from(row['services'] ?? []),
           subscribers: [],
           queue: [],
           nextTicket: row['next_ticket'] as int,
@@ -397,7 +401,7 @@ class AppProvider extends ChangeNotifier {
         id: row['id'] as String, ownerId: uid, name: row['name'] as String, area: row['area'] as String,
         price: row['price'] as int, chairs: row['chairs'] as int, rating: (row['rating'] as num).toDouble(),
         latitude: (row['latitude'] as num?)?.toDouble(), longitude: (row['longitude'] as num?)?.toDouble(),
-        status: row['status'] as String? ?? 'pending', portfolioUrls: [], reviews: [], subscribers: [], queue: [], nextTicket: row['next_ticket'] as int, isMine: true,
+        status: row['status'] as String? ?? 'pending', portfolioUrls: [], reviews: [], services: List<String>.from(row['services'] ?? []), subscribers: [], queue: [], nextTicket: row['next_ticket'] as int, isMine: true,
       );
       shops.add(shop);
       ownerShopId = shop.id;
@@ -638,18 +642,35 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> submitReview(String shopId, int rating, String? comment) async {
+ Future<void> submitReview(String shopId, int rating, String? comment) async {
     final uid = supabase.auth.currentUser?.id;
     if (uid == null) return;
     try {
-      await supabase.from('reviews').insert({
+      // .select() returns the new row instantly so we can update the UI without reloading everything
+      final newRow = await supabase.from('reviews').insert({
         'shop_id': shopId,
         'customer_id': uid,
         'rating': rating,
         'comment': comment?.trim().isEmpty == true ? null : comment,
-      });
+      }).select('*, profiles(full_name)').single();
+
+      final shopIndex = shops.indexWhere((s) => s.id == shopId);
+      if (shopIndex != -1) {
+        shops[shopIndex].reviews.insert(0, Review(
+          id: newRow['id'],
+          customerId: uid,
+          customerName: newRow['profiles'] != null ? newRow['profiles']['full_name'] ?? 'You' : 'You',
+          rating: rating,
+          comment: newRow['comment'],
+          createdAt: DateTime.parse(newRow['created_at']),
+        ));
+        
+        // Quick local math to update the stars instantly
+        final totalStars = shops[shopIndex].reviews.fold(0, (sum, r) => sum + r.rating);
+        shops[shopIndex].rating = totalStars / shops[shopIndex].reviews.length;
+        notifyListeners(); 
+      }
       showSnack('Thanks for the review!');
-      await refreshShops(); 
     } catch (e) {
       showSnack("Couldn't submit review.", isError: true);
       debugPrint('Review failed: $e');
