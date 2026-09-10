@@ -13,6 +13,7 @@ import '../core/notification_helper.dart';
 import '../models/shop.dart';
 import '../models/barber.dart';
 import '../models/queue_entry.dart';
+import '../models/review.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -139,6 +140,18 @@ class AppProvider extends ChangeNotifier {
     final shopRows = await supabase.from('shops').select();
     final statsRows = await supabase.from('shop_stats').select();
     final statsById = {for (final r in statsRows) r['shop_id'] as String: r};
+    final reviewRows = await supabase.from('reviews').select().order('created_at', ascending: false);
+    final reviewsByShop = <String, List<Review>>{};
+    for (final r in reviewRows) {
+      final rev = Review(
+        id: r['id'] as String,
+        customerId: r['customer_id'] as String,
+        rating: r['rating'] as int,
+        comment: r['comment'] as String?,
+        createdAt: DateTime.parse(r['created_at'] as String),
+      );
+      reviewsByShop.putIfAbsent(r['shop_id'] as String, () => []).add(rev);
+    }
 
     return [
       for (final row in shopRows)
@@ -155,6 +168,7 @@ class AppProvider extends ChangeNotifier {
           status: row['status'] as String? ?? 'pending',
           photoUrl: row['photo_url'] as String?,
           portfolioUrls: List<String>.from(row['portfolio_urls'] ?? []),
+          reviews: reviewsByShop[row['id']] ?? [],
           subscribers: [],
           queue: [],
           nextTicket: row['next_ticket'] as int,
@@ -383,7 +397,7 @@ class AppProvider extends ChangeNotifier {
         id: row['id'] as String, ownerId: uid, name: row['name'] as String, area: row['area'] as String,
         price: row['price'] as int, chairs: row['chairs'] as int, rating: (row['rating'] as num).toDouble(),
         latitude: (row['latitude'] as num?)?.toDouble(), longitude: (row['longitude'] as num?)?.toDouble(),
-        status: row['status'] as String? ?? 'pending', portfolioUrls: [], subscribers: [], queue: [], nextTicket: row['next_ticket'] as int, isMine: true,
+        status: row['status'] as String? ?? 'pending', portfolioUrls: [], reviews: [], subscribers: [], queue: [], nextTicket: row['next_ticket'] as int, isMine: true,
       );
       shops.add(shop);
       ownerShopId = shop.id;
@@ -623,4 +637,23 @@ class AppProvider extends ChangeNotifier {
       debugPrint('Failed to register device token: $e');
     }
   }
+
+  Future<void> submitReview(String shopId, int rating, String? comment) async {
+    final uid = supabase.auth.currentUser?.id;
+    if (uid == null) return;
+    try {
+      await supabase.from('reviews').insert({
+        'shop_id': shopId,
+        'customer_id': uid,
+        'rating': rating,
+        'comment': comment?.trim().isEmpty == true ? null : comment,
+      });
+      showSnack('Thanks for the review!');
+      await refreshShops(); 
+    } catch (e) {
+      showSnack("Couldn't submit review.", isError: true);
+      debugPrint('Review failed: $e');
+    }
+  }
 }
+

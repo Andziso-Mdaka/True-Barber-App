@@ -14,7 +14,7 @@ Future<void> initNotifications() async {
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
       ?.createNotificationChannel(_channel);
   await _plugin.initialize(
-    const InitializationSettings(
+    settings: const InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       iOS: DarwinInitializationSettings(),
     ),
@@ -23,10 +23,10 @@ Future<void> initNotifications() async {
 
 void showLocalNotification({required int id, String? title, String? body}) {
   _plugin.show(
-    id,
-    title,
-    body,
-    NotificationDetails(
+    id: id,
+    title: title,
+    body: body,
+    notificationDetails: NotificationDetails(
       android: AndroidNotificationDetails(
         _channel.id,
         _channel.name,

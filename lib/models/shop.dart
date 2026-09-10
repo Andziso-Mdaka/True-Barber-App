@@ -1,5 +1,6 @@
 import 'barber.dart';
 import 'queue_entry.dart';
+import 'review.dart';
 
 class Shop {
   final String id;
@@ -17,6 +18,7 @@ class Shop {
   List<String> subscribers;
   List<QueueEntry> queue;
   List<Barber> staff;
+  List<Review> reviews;
   int nextTicket;
   bool isMine;
   int subscriberCount;
@@ -34,7 +36,8 @@ class Shop {
     this.longitude,
     this.status = 'pending',
     this.photoUrl,
-    this.portfolioUrls = const [], // <-- NEW
+    this.portfolioUrls = const [],
+    this.reviews = const [],
     required this.subscribers,
     required this.queue,
     List<Barber>? staff,
