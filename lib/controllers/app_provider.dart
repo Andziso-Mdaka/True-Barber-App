@@ -44,6 +44,7 @@ class AppProvider extends ChangeNotifier {
   String? createShopError;
   bool uploadingPhoto = false;
   bool refreshingQueue = false;
+  bool uploadingPortfolio = false; 
 
   // Push Notifications
   bool notificationsEnabled = false;
@@ -153,6 +154,7 @@ class AppProvider extends ChangeNotifier {
           longitude: (row['longitude'] as num?)?.toDouble(),
           status: row['status'] as String? ?? 'pending',
           photoUrl: row['photo_url'] as String?,
+          portfolioUrls: List<String>.from(row['portfolio_urls'] ?? []),
           subscribers: [],
           queue: [],
           nextTicket: row['next_ticket'] as int,
@@ -381,7 +383,7 @@ class AppProvider extends ChangeNotifier {
         id: row['id'] as String, ownerId: uid, name: row['name'] as String, area: row['area'] as String,
         price: row['price'] as int, chairs: row['chairs'] as int, rating: (row['rating'] as num).toDouble(),
         latitude: (row['latitude'] as num?)?.toDouble(), longitude: (row['longitude'] as num?)?.toDouble(),
-        status: row['status'] as String? ?? 'pending', subscribers: [], queue: [], nextTicket: row['next_ticket'] as int, isMine: true,
+        status: row['status'] as String? ?? 'pending', portfolioUrls: [], subscribers: [], queue: [], nextTicket: row['next_ticket'] as int, isMine: true,
       );
       shops.add(shop);
       ownerShopId = shop.id;
@@ -410,7 +412,8 @@ class AppProvider extends ChangeNotifier {
 
   Future<void> uploadShopPhoto() async {
     if (ownerShop == null) return;
-    final picked = await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1600, imageQuality: 85);
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(source: ImageSource.gallery, maxWidth: 1600, imageQuality: 85);
     if (picked == null) return;
 
     uploadingPhoto = true;
@@ -420,7 +423,12 @@ class AppProvider extends ChangeNotifier {
       final ext = picked.name.contains('.') ? picked.name.split('.').last : 'jpg';
       final path = '${ownerShop!.id}/cover.$ext';
 
-      await supabase.storage.from('shop-photos').uploadBinary(path, bytes, fileOptions: const FileOptions(upsert: true));
+      await supabase.storage.from('shop-photos').uploadBinary(
+            path,
+            bytes,
+            fileOptions: const FileOptions(upsert: true),
+          );
+
       final publicUrl = supabase.storage.from('shop-photos').getPublicUrl(path);
       final bustedUrl = '$publicUrl?t=${DateTime.now().millisecondsSinceEpoch}';
 
@@ -428,9 +436,43 @@ class AppProvider extends ChangeNotifier {
       ownerShop!.photoUrl = bustedUrl;
       showSnack('Photo updated');
     } catch (e) {
-      showSnack("Couldn't upload photo.", isError: true);
+      showSnack("Couldn't upload photo. Please try again.", isError: true);
+      debugPrint('Failed to upload shop photo: $e');
     } finally {
       uploadingPhoto = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> uploadPortfolioPhoto() async {
+    if (ownerShop == null) return;
+    final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 80);
+    if (picked == null) return;
+
+    uploadingPortfolio = true;
+    notifyListeners();
+    
+    try {
+      final bytes = await picked.readAsBytes();
+      final ext = picked.name.contains('.') ? picked.name.split('.').last : 'jpg';
+      // Use timestamp so every image has a unique name in the array
+      final fileName = '${DateTime.now().millisecondsSinceEpoch}.$ext'; 
+      final path = '${ownerShop!.id}/$fileName';
+
+      await supabase.storage.from('shop-portfolios').uploadBinary(path, bytes);
+      final publicUrl = supabase.storage.from('shop-portfolios').getPublicUrl(path);
+
+      // Append to the local list, then update Supabase
+      final updatedList = List<String>.from(ownerShop!.portfolioUrls)..add(publicUrl);
+      await supabase.from('shops').update({'portfolio_urls': updatedList}).eq('id', ownerShop!.id);
+      
+      ownerShop!.portfolioUrls = updatedList;
+      showSnack('Added to portfolio');
+    } catch (e) {
+      showSnack("Couldn't upload photo.", isError: true);
+      debugPrint('Portfolio upload failed: $e');
+    } finally {
+      uploadingPortfolio = false;
       notifyListeners();
     }
   }

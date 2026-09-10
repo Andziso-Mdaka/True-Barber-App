@@ -13,6 +13,7 @@ class Shop {
   double? longitude;
   String status;
   String? photoUrl;
+  List<String> portfolioUrls; // <-- NEW
   List<String> subscribers;
   List<QueueEntry> queue;
   List<Barber> staff;
@@ -33,6 +34,7 @@ class Shop {
     this.longitude,
     this.status = 'pending',
     this.photoUrl,
+    this.portfolioUrls = const [], // <-- NEW
     required this.subscribers,
     required this.queue,
     List<Barber>? staff,

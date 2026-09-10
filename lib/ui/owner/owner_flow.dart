@@ -28,7 +28,6 @@ class _OwnerFlowState extends State<OwnerFlow> {
 
   @override
   Widget build(BuildContext context) {
-    // Magic line connects to Provider!
     final provider = context.watch<AppProvider>();
 
     if (provider.ownerShop == null) {
@@ -182,6 +181,43 @@ class _OwnerFlowState extends State<OwnerFlow> {
             ),
           ),
         ),
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('PORTFOLIO', style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+            if (provider.uploadingPortfolio)
+               const SizedBox(height: 12, width: 12, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.brass))
+            else
+               GestureDetector(
+                 onTap: provider.uploadPortfolioPhoto,
+                 child: const Text('+ Add Photo', style: TextStyle(color: AppColors.brass, fontSize: 12, fontWeight: FontWeight.bold)),
+               )
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (shop.portfolioUrls.isEmpty)
+          const Text("Show off your cuts. Add some photos to your gallery.", style: TextStyle(color: AppColors.textFaint, fontSize: 12))
+        else
+          SizedBox(
+            height: 100,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: shop.portfolioUrls.length,
+              itemBuilder: (context, i) {
+                return Container(
+                  width: 100,
+                  margin: const EdgeInsets.only(right: 8),
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    image: DecorationImage(image: NetworkImage(shop.portfolioUrls[i]), fit: BoxFit.cover),
+                  ),
+                );
+              },
+            ),
+          ),
+        const SizedBox(height: 16),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [

@@ -51,6 +51,29 @@ class ShopDetailScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
+        ],if (shop.portfolioUrls.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          const Text("PORTFOLIO", style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 80,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: shop.portfolioUrls.length,
+              itemBuilder: (context, i) {
+                return Container(
+                  width: 80,
+                  margin: const EdgeInsets.only(right: 8),
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(6),
+                    image: DecorationImage(image: NetworkImage(shop.portfolioUrls[i]), fit: BoxFit.cover),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 12),
         ],
         Text('${shop.area} · ${shop.chairs} chairs · ${shop.rating}★',
             style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
