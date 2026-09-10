@@ -1,0 +1,44 @@
+import 'barber.dart';
+import 'queue_entry.dart';
+
+class Shop {
+  final String id;
+  final String ownerId;
+  String name;
+  String area;
+  int price;
+  int chairs;
+  double rating;
+  double? latitude;
+  double? longitude;
+  String status;
+  String? photoUrl;
+  List<String> subscribers;
+  List<QueueEntry> queue;
+  List<Barber> staff;
+  int nextTicket;
+  bool isMine;
+  int subscriberCount;
+  int queueCount;
+
+  Shop({
+    required this.id,
+    required this.ownerId,
+    required this.name,
+    required this.area,
+    required this.price,
+    required this.chairs,
+    required this.rating,
+    this.latitude,
+    this.longitude,
+    this.status = 'pending',
+    this.photoUrl,
+    required this.subscribers,
+    required this.queue,
+    List<Barber>? staff,
+    required this.nextTicket,
+    this.isMine = false,
+    this.subscriberCount = 0,
+    this.queueCount = 0,
+  }) : staff = staff ?? [];
+}

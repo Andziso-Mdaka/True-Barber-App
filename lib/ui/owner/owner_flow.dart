@@ -1,0 +1,426 @@
+import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart';
+import '../../core/theme.dart';
+import '../../models/shop.dart';
+import '../../models/barber.dart';
+import '../../models/queue_entry.dart';
+import '../widgets/custom_field.dart';
+import '../widgets/primary_button.dart';
+import '../widgets/outline_button.dart';
+import '../widgets/metric_card.dart';
+import 'location_picker_screen.dart';
+import '../../core/utils.dart';
+
+class OwnerFlow extends StatefulWidget {
+  final Shop? ownerShop;
+  final void Function(String name, String area, int price, int chairs, LatLng? location) onCreateShop;
+  final bool creatingShop;
+  final String? createShopError;
+  final VoidCallback onRefresh;
+  final bool refreshingQueue;
+  final void Function(String queueId) onCompleteQueueEntry;
+  final void Function(String queueId) onCallCustomer;
+  final void Function(String name) onAddBarber;
+  final void Function(String barberId) onRemoveBarber;
+  final void Function(String barberId) onToggleBarberActive;
+  final void Function(LatLng location) onUpdateLocation;
+  final Future<void> Function() onUploadPhoto;
+  final bool uploadingPhoto;
+
+  const OwnerFlow({
+    super.key,
+    required this.ownerShop,
+    required this.onCreateShop,
+    required this.creatingShop,
+    required this.createShopError,
+    required this.onRefresh,
+    required this.refreshingQueue,
+    required this.onCompleteQueueEntry,
+    required this.onCallCustomer,
+    required this.onAddBarber,
+    required this.onRemoveBarber,
+    required this.onToggleBarberActive,
+    required this.onUpdateLocation,
+    required this.onUploadPhoto,
+    required this.uploadingPhoto,
+  });
+
+  @override
+  State<OwnerFlow> createState() => _OwnerFlowState();
+}
+
+class _OwnerFlowState extends State<OwnerFlow> {
+  final nameCtrl = TextEditingController();
+  final areaCtrl = TextEditingController();
+  final priceCtrl = TextEditingController();
+  final chairsCtrl = TextEditingController();
+  LatLng? pickedLocation;
+  final newBarberCtrl = TextEditingController();
+  bool showStaff = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.ownerShop == null) {
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text('List your shop', style: TextStyle(color: AppColors.text, fontSize: 19, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          const Text('Set a monthly price, and let regulars walk in without booking.',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
+          const SizedBox(height: 18),
+          CustomField(label: 'Shop name', controller: nameCtrl, hint: 'e.g. Corner Cuts'),
+          CustomField(label: 'Area / suburb', controller: areaCtrl, hint: 'e.g. Rosebank'),
+          Row(children: [
+            Expanded(child: CustomField(label: 'Price / month (R)', controller: priceCtrl, hint: '450', numeric: true)),
+            const SizedBox(width: 12),
+            Expanded(child: CustomField(label: 'Chairs', controller: chairsCtrl, hint: '3', numeric: true)),
+          ]),
+          const Text('LOCATION', style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+          const SizedBox(height: 5),
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () async {
+              final result = await Navigator.of(context).push<LatLng>(
+                MaterialPageRoute(builder: (_) => LocationPickerScreen(initial: pickedLocation)),
+              );
+              if (result != null) setState(() => pickedLocation = result);
+            },
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              decoration: BoxDecoration(color: AppColors.surface2, borderRadius: BorderRadius.circular(8)),
+              child: Row(
+                children: [
+                  Icon(pickedLocation == null ? Icons.add_location_alt_outlined : Icons.check_circle,
+                      color: pickedLocation == null ? AppColors.textMuted : AppColors.brass, size: 18),
+                  const SizedBox(width: 8),
+                  Text(
+                    pickedLocation == null ? 'Set on map (optional, but recommended)' : 'Location set — tap to adjust',
+                    style: TextStyle(color: pickedLocation == null ? AppColors.textMuted : AppColors.text, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (widget.createShopError != null) ...[
+            Text(widget.createShopError!, style: const TextStyle(color: AppColors.red, fontSize: 12)),
+            const SizedBox(height: 8),
+          ],
+          PrimaryButton(
+            label: 'Create shop',
+            loading: widget.creatingShop,
+            onTap: () {
+              final price = int.tryParse(priceCtrl.text) ?? 0;
+              final chairs = int.tryParse(chairsCtrl.text) ?? 0;
+              if (nameCtrl.text.isEmpty || areaCtrl.text.isEmpty || price == 0 || chairs == 0) {
+                showSnack('Fill in every field first', isError: true);
+                return;
+              }
+              widget.onCreateShop(nameCtrl.text, areaCtrl.text, price, chairs, pickedLocation);
+            },
+          ),
+        ],
+      );
+    }
+
+    final shop = widget.ownerShop!;
+    final activeStaffCount = shop.staff.where((b) => b.active).length;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        if (shop.status != 'approved') ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.only(bottom: 16),
+            decoration: BoxDecoration(
+              color: (shop.status == 'rejected' ? AppColors.red : AppColors.brass).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: (shop.status == 'rejected' ? AppColors.red : AppColors.brass).withOpacity(0.4)),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  shop.status == 'rejected' ? Icons.block : Icons.hourglass_top,
+                  color: shop.status == 'rejected' ? AppColors.red : AppColors.brass,
+                  size: 18,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    shop.status == 'rejected'
+                        ? "This shop wasn't approved and isn't visible to customers."
+                        : "Waiting for approval — customers can't find or subscribe to this shop yet.",
+                    style: const TextStyle(color: AppColors.text, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: widget.uploadingPhoto ? null : widget.onUploadPhoto,
+          child: Container(
+            width: double.infinity,
+            height: 140,
+            margin: const EdgeInsets.only(bottom: 16),
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: AppColors.surface2,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.line),
+              image: shop.photoUrl != null
+                  ? DecorationImage(image: NetworkImage(shop.photoUrl!), fit: BoxFit.cover)
+                  : null,
+            ),
+            child: Stack(
+              children: [
+                if (shop.photoUrl == null)
+                  const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add_a_photo_outlined, color: AppColors.textMuted, size: 26),
+                        SizedBox(height: 6),
+                        Text('Add a shop photo', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                if (widget.uploadingPhoto)
+                  Container(
+                    color: Colors.black.withOpacity(0.4),
+                    child: const Center(
+                      child: CircularProgressIndicator(color: AppColors.brass),
+                    ),
+                  )
+                else if (shop.photoUrl != null)
+                  Positioned(
+                    right: 8,
+                    bottom: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                      decoration: BoxDecoration(color: AppColors.bg.withOpacity(0.75), borderRadius: BorderRadius.circular(6)),
+                      child: const Text('Change photo', style: TextStyle(color: AppColors.text, fontSize: 11, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(shop.name, style: const TextStyle(color: AppColors.text, fontSize: 19, fontWeight: FontWeight.bold)),
+                  Text('${shop.area} · ${shop.chairs} chairs', style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                ],
+              ),
+            ),
+            OutlinedButton(
+              onPressed: () => setState(() => showStaff = !showStaff),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: showStaff ? AppColors.brass : AppColors.textMuted,
+                side: BorderSide(color: showStaff ? AppColors.brass : AppColors.line),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: Text(showStaff ? 'Queue' : 'Staff'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () async {
+            final initial = shop.latitude != null && shop.longitude != null
+                ? LatLng(shop.latitude!, shop.longitude!)
+                : null;
+            final result = await Navigator.of(context).push<LatLng>(
+              MaterialPageRoute(builder: (_) => LocationPickerScreen(initial: initial)),
+            );
+            if (result != null) widget.onUpdateLocation(result);
+          },
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(color: AppColors.surface2, borderRadius: BorderRadius.circular(8)),
+            child: Row(
+              children: [
+                Icon(
+                  shop.latitude == null ? Icons.location_off_outlined : Icons.location_on_outlined,
+                  color: shop.latitude == null ? AppColors.red.withOpacity(0.8) : AppColors.brass,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    shop.latitude == null ? "No location set — you won't show on the map" : 'Location set — tap to update',
+                    style: const TextStyle(color: AppColors.text, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (!showStaff) ...[
+          Row(children: [
+            Expanded(child: MetricCard(label: 'Subscribers', value: '${shop.subscriberCount}')),
+            const SizedBox(width: 10),
+            Expanded(child: MetricCard(label: 'Monthly revenue', value: 'R${shop.subscriberCount * shop.price}', accent: true)),
+            const SizedBox(width: 10),
+            Expanded(child: MetricCard(label: 'In queue', value: '${shop.queue.where((q) => q.status == 'waiting').length}')),
+          ]),
+          const SizedBox(height: 16),
+          CustomOutlineButton(
+            label: 'Refresh queue',
+            loading: widget.refreshingQueue,
+            onTap: widget.onRefresh,
+          ),
+          const SizedBox(height: 18),
+          const Text("TODAY'S QUEUE", style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+          const SizedBox(height: 8),
+          if (shop.queue.isEmpty)
+            const Text("Nobody's waiting right now.", style: TextStyle(color: AppColors.textFaint, fontSize: 13)),
+          ...shop.queue.map((q) => Container(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppColors.line))),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Text.rich(TextSpan(children: [
+                            TextSpan(text: '#${q.ticketNo} ', style: const TextStyle(color: AppColors.brass, fontWeight: FontWeight.bold)),
+                            TextSpan(text: '${q.name} → ${q.barber}', style: const TextStyle(color: AppColors.text)),
+                          ])),
+                          if (q.status == 'called') ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(color: AppColors.brass.withOpacity(0.15), borderRadius: BorderRadius.circular(4)),
+                              child: const Text('CALLED', style: TextStyle(color: AppColors.brass, fontSize: 10, fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        if (q.status == 'waiting')
+                          GestureDetector(
+                            onTap: () => widget.onCallCustomer(q.id),
+                            child: const Padding(
+                              padding: EdgeInsets.only(right: 14),
+                              child: Text('Call', style: TextStyle(color: AppColors.brass, decoration: TextDecoration.underline, fontWeight: FontWeight.w600)),
+                            ),
+                          ),
+                        GestureDetector(
+                          onTap: () => widget.onCompleteQueueEntry(q.id),
+                          child: const Text('Done', style: TextStyle(color: AppColors.textMuted, decoration: TextDecoration.underline)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              )),
+        ] else ...[
+          Text(
+            '$activeStaffCount of ${shop.staff.length} barbers on duty · ${shop.chairs} chairs',
+            style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: newBarberCtrl,
+                  style: const TextStyle(color: AppColors.text),
+                  decoration: InputDecoration(
+                    hintText: "Barber's name",
+                    hintStyle: const TextStyle(color: AppColors.textFaint),
+                    filled: true,
+                    fillColor: AppColors.surface2,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                  ),
+                  onSubmitted: (_) {
+                    widget.onAddBarber(newBarberCtrl.text);
+                    newBarberCtrl.clear();
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton(
+                onPressed: () {
+                  widget.onAddBarber(newBarberCtrl.text);
+                  newBarberCtrl.clear();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.brass,
+                  foregroundColor: AppColors.bg,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('Add', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (shop.staff.isEmpty)
+            const Text(
+              "No barbers on the team yet. Add one above so walk-ins can be assigned.",
+              style: TextStyle(color: AppColors.textFaint, fontSize: 13),
+            ),
+          ...shop.staff.map((b) {
+            final onDutyCount = shop.queue.where((q) => q.barber == b.name).length;
+            return Container(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppColors.line))),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(b.name,
+                            style: TextStyle(
+                              color: b.active ? AppColors.text : AppColors.textFaint,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            )),
+                        Text(
+                          b.active ? '$onDutyCount in queue now' : 'Off duty',
+                          style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: b.active,
+                    onChanged: (_) => widget.onToggleBarberActive(b.id),
+                    activeColor: AppColors.brass,
+                  ),
+                  GestureDetector(
+                    onTap: () => widget.onRemoveBarber(b.id),
+                    child: const Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Text('Remove', style: TextStyle(color: AppColors.red, fontSize: 12)),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ],
+    );
+  }
+}
