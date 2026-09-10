@@ -57,3 +57,6 @@ Future<Position?> getCurrentPosition() async {
     return null;
   }
 }
+extension FirstOrNull<T> on Iterable<T> {
+  T? get firstOrNull => isEmpty ? null : first;
+}

@@ -1,61 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../core/theme.dart';
 import '../../models/shop.dart';
-import '../../models/queue_entry.dart';
+import '../../controllers/app_provider.dart';
 
-// Import all the screens we just created
+// Import all the screens
 import 'account_screen.dart';
 import 'shop_detail_screen.dart';
 import 'shop_list_screen.dart';
 import 'shop_map_screen.dart';
 import 'ticket_screen.dart';
 
-
 class CustomerFlow extends StatefulWidget {
-  final List<Shop> shops;
-  final Set<String> mySubShopIds;
-  final QueueEntry? myTicket;
-  final int? myTicketPosition;
-  final String? myTicketShopId;
-  final bool subscribing;
-  final String? cancellingShopId;
-  final bool joiningQueue;
-  final bool leavingQueue;
-  final bool refreshingShops;
-  final Future<void> Function() onRefreshShops;
-  final bool notificationsEnabled;
-  final bool checkingNotificationPermission;
-  final Future<void> Function() onEnableNotifications;
-  final bool refreshingTicket;
-  final Future<void> Function() onRefreshTicket;
-  final void Function(String shopId) onSubscribe;
-  final void Function(String shopId) onCancelSubscription;
-  final Future<void> Function(String shopId) onWalkIn;
-  final VoidCallback onLeaveQueue;
-
-  const CustomerFlow({
-    super.key,
-    required this.shops,
-    required this.mySubShopIds,
-    required this.myTicket,
-    required this.myTicketPosition,
-    required this.myTicketShopId,
-    required this.subscribing,
-    required this.cancellingShopId,
-    required this.joiningQueue,
-    required this.leavingQueue,
-    required this.refreshingShops,
-    required this.onRefreshShops,
-    required this.notificationsEnabled,
-    required this.checkingNotificationPermission,
-    required this.onEnableNotifications,
-    required this.refreshingTicket,
-    required this.onRefreshTicket,
-    required this.onSubscribe,
-    required this.onCancelSubscription,
-    required this.onWalkIn,
-    required this.onLeaveQueue,
-  });
+  const CustomerFlow({super.key});
 
   @override
   State<CustomerFlow> createState() => _CustomerFlowState();
@@ -67,20 +24,23 @@ class _CustomerFlowState extends State<CustomerFlow> {
 
   @override
   Widget build(BuildContext context) {
+    // This is the magic line that connects to the Provider!
+    final provider = context.watch<AppProvider>();
     Widget body;
+
     if (openedShop != null) {
       body = ShopDetailScreen(
         shop: openedShop!,
-        isSubscribed: widget.mySubShopIds.contains(openedShop!.id),
-        subscribing: widget.subscribing,
-        joiningQueue: widget.joiningQueue,
-        cancelling: widget.cancellingShopId == openedShop!.id,
-        queuedElsewhere: widget.myTicket != null && widget.myTicketShopId != openedShop!.id,
+        isSubscribed: provider.mySubShopIds.contains(openedShop!.id),
+        subscribing: provider.subscribing,
+        joiningQueue: provider.joiningQueue,
+        cancelling: provider.cancellingShopId == openedShop!.id,
+        queuedElsewhere: provider.myTicket != null && provider.myTicketShopId != openedShop!.id,
         onBack: () => setState(() => openedShop = null),
-        onSubscribe: () => widget.onSubscribe(openedShop!.id),
+        onSubscribe: () => provider.subscribe(openedShop!.id),
         onWalkIn: () async {
           final shopId = openedShop!.id;
-          await widget.onWalkIn(shopId);
+          await provider.walkIn(shopId);
           if (mounted) {
             setState(() {
               openedShop = null;
@@ -88,41 +48,41 @@ class _CustomerFlowState extends State<CustomerFlow> {
             });
           }
         },
-        onCancel: () => widget.onCancelSubscription(openedShop!.id),
+        onCancel: () => provider.cancelSubscription(openedShop!.id),
       );
-    } else if (tab == 1 && widget.myTicket != null) {
-      final shop = widget.shops.firstWhere((s) => s.id == widget.myTicketShopId);
+    } else if (tab == 1 && provider.myTicket != null) {
+      final shop = provider.shops.firstWhere((s) => s.id == provider.myTicketShopId);
       body = TicketScreen(
         shop: shop,
-        ticket: widget.myTicket!,
-        position: widget.myTicketPosition ?? 1,
-        leaving: widget.leavingQueue,
-        refreshing: widget.refreshingTicket,
-        onLeave: widget.onLeaveQueue,
-        onRefresh: widget.onRefreshTicket,
+        ticket: provider.myTicket!,
+        position: provider.myTicketPosition ?? 1,
+        leaving: provider.leavingQueue,
+        refreshing: provider.refreshingTicket,
+        onLeave: provider.leaveQueue,
+        onRefresh: provider.refreshTicket,
       );
     } else if (tab == 2) {
       body = AccountScreen(
-        shops: widget.shops.where((s) => widget.mySubShopIds.contains(s.id)).toList(),
-        cancellingShopId: widget.cancellingShopId,
-        onCancel: widget.onCancelSubscription,
-        notificationsEnabled: widget.notificationsEnabled,
-        checkingNotificationPermission: widget.checkingNotificationPermission,
-        onEnableNotifications: widget.onEnableNotifications,
+        shops: provider.shops.where((s) => provider.mySubShopIds.contains(s.id)).toList(),
+        cancellingShopId: provider.cancellingShopId,
+        onCancel: provider.cancelSubscription,
+        notificationsEnabled: provider.notificationsEnabled,
+        checkingNotificationPermission: provider.checkingNotificationPermission,
+        onEnableNotifications: provider.requestNotificationPermission,
       );
     } else if (tab == 3) {
       body = ShopMapScreen(
-        shops: widget.shops,
+        shops: provider.shops,
         onOpen: (s) => setState(() => openedShop = s),
-        refreshingShops: widget.refreshingShops,
-        onRefreshShops: widget.onRefreshShops,
+        refreshingShops: provider.refreshingShops,
+        onRefreshShops: provider.refreshShops,
       );
     } else {
       body = ShopListScreen(
-        shops: widget.shops,
+        shops: provider.shops,
         onOpen: (s) => setState(() => openedShop = s),
-        refreshingShops: widget.refreshingShops,
-        onRefreshShops: widget.onRefreshShops,
+        refreshingShops: provider.refreshingShops,
+        onRefreshShops: provider.refreshShops,
       );
     }
 
@@ -137,7 +97,7 @@ class _CustomerFlowState extends State<CustomerFlow> {
               children: [
                 _navItem('Home', 0),
                 _navItem('Map', 3),
-                _navItem('Ticket', 1, disabled: widget.myTicket == null),
+                _navItem('Ticket', 1, disabled: provider.myTicket == null),
                 _navItem('Account', 2),
               ],
             ),

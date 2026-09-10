@@ -1,49 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:provider/provider.dart';
 import '../../core/theme.dart';
-import '../../models/shop.dart';
-import '../../models/barber.dart';
-import '../../models/queue_entry.dart';
+import '../../core/utils.dart';
+import '../../controllers/app_provider.dart';
 import '../widgets/custom_field.dart';
 import '../widgets/primary_button.dart';
 import '../widgets/outline_button.dart';
 import '../widgets/metric_card.dart';
 import 'location_picker_screen.dart';
-import '../../core/utils.dart';
 
 class OwnerFlow extends StatefulWidget {
-  final Shop? ownerShop;
-  final void Function(String name, String area, int price, int chairs, LatLng? location) onCreateShop;
-  final bool creatingShop;
-  final String? createShopError;
-  final VoidCallback onRefresh;
-  final bool refreshingQueue;
-  final void Function(String queueId) onCompleteQueueEntry;
-  final void Function(String queueId) onCallCustomer;
-  final void Function(String name) onAddBarber;
-  final void Function(String barberId) onRemoveBarber;
-  final void Function(String barberId) onToggleBarberActive;
-  final void Function(LatLng location) onUpdateLocation;
-  final Future<void> Function() onUploadPhoto;
-  final bool uploadingPhoto;
-
-  const OwnerFlow({
-    super.key,
-    required this.ownerShop,
-    required this.onCreateShop,
-    required this.creatingShop,
-    required this.createShopError,
-    required this.onRefresh,
-    required this.refreshingQueue,
-    required this.onCompleteQueueEntry,
-    required this.onCallCustomer,
-    required this.onAddBarber,
-    required this.onRemoveBarber,
-    required this.onToggleBarberActive,
-    required this.onUpdateLocation,
-    required this.onUploadPhoto,
-    required this.uploadingPhoto,
-  });
+  const OwnerFlow({super.key});
 
   @override
   State<OwnerFlow> createState() => _OwnerFlowState();
@@ -60,7 +28,10 @@ class _OwnerFlowState extends State<OwnerFlow> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.ownerShop == null) {
+    // Magic line connects to Provider!
+    final provider = context.watch<AppProvider>();
+
+    if (provider.ownerShop == null) {
       return ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -104,13 +75,13 @@ class _OwnerFlowState extends State<OwnerFlow> {
             ),
           ),
           const SizedBox(height: 16),
-          if (widget.createShopError != null) ...[
-            Text(widget.createShopError!, style: const TextStyle(color: AppColors.red, fontSize: 12)),
+          if (provider.createShopError != null) ...[
+            Text(provider.createShopError!, style: const TextStyle(color: AppColors.red, fontSize: 12)),
             const SizedBox(height: 8),
           ],
           PrimaryButton(
             label: 'Create shop',
-            loading: widget.creatingShop,
+            loading: provider.creatingShop,
             onTap: () {
               final price = int.tryParse(priceCtrl.text) ?? 0;
               final chairs = int.tryParse(chairsCtrl.text) ?? 0;
@@ -118,14 +89,14 @@ class _OwnerFlowState extends State<OwnerFlow> {
                 showSnack('Fill in every field first', isError: true);
                 return;
               }
-              widget.onCreateShop(nameCtrl.text, areaCtrl.text, price, chairs, pickedLocation);
+              provider.createShop(nameCtrl.text, areaCtrl.text, price, chairs, pickedLocation);
             },
           ),
         ],
       );
     }
 
-    final shop = widget.ownerShop!;
+    final shop = provider.ownerShop!;
     final activeStaffCount = shop.staff.where((b) => b.active).length;
 
     return ListView(
@@ -163,7 +134,7 @@ class _OwnerFlowState extends State<OwnerFlow> {
         ],
         InkWell(
           borderRadius: BorderRadius.circular(10),
-          onTap: widget.uploadingPhoto ? null : widget.onUploadPhoto,
+          onTap: provider.uploadingPhoto ? null : provider.uploadShopPhoto,
           child: Container(
             width: double.infinity,
             height: 140,
@@ -190,7 +161,7 @@ class _OwnerFlowState extends State<OwnerFlow> {
                       ],
                     ),
                   ),
-                if (widget.uploadingPhoto)
+                if (provider.uploadingPhoto)
                   Container(
                     color: Colors.black.withOpacity(0.4),
                     child: const Center(
@@ -244,7 +215,7 @@ class _OwnerFlowState extends State<OwnerFlow> {
             final result = await Navigator.of(context).push<LatLng>(
               MaterialPageRoute(builder: (_) => LocationPickerScreen(initial: initial)),
             );
-            if (result != null) widget.onUpdateLocation(result);
+            if (result != null) provider.updateShopLocation(result);
           },
           child: Container(
             width: double.infinity,
@@ -280,8 +251,8 @@ class _OwnerFlowState extends State<OwnerFlow> {
           const SizedBox(height: 16),
           CustomOutlineButton(
             label: 'Refresh queue',
-            loading: widget.refreshingQueue,
-            onTap: widget.onRefresh,
+            loading: provider.refreshingQueue,
+            onTap: provider.refreshOwnerShop,
           ),
           const SizedBox(height: 18),
           const Text("TODAY'S QUEUE", style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
@@ -316,14 +287,14 @@ class _OwnerFlowState extends State<OwnerFlow> {
                       children: [
                         if (q.status == 'waiting')
                           GestureDetector(
-                            onTap: () => widget.onCallCustomer(q.id),
+                            onTap: () => provider.callCustomer(q.id),
                             child: const Padding(
                               padding: EdgeInsets.only(right: 14),
                               child: Text('Call', style: TextStyle(color: AppColors.brass, decoration: TextDecoration.underline, fontWeight: FontWeight.w600)),
                             ),
                           ),
                         GestureDetector(
-                          onTap: () => widget.onCompleteQueueEntry(q.id),
+                          onTap: () => provider.completeQueueEntry(q.id),
                           child: const Text('Done', style: TextStyle(color: AppColors.textMuted, decoration: TextDecoration.underline)),
                         ),
                       ],
@@ -352,7 +323,7 @@ class _OwnerFlowState extends State<OwnerFlow> {
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
                   ),
                   onSubmitted: (_) {
-                    widget.onAddBarber(newBarberCtrl.text);
+                    provider.addBarber(newBarberCtrl.text);
                     newBarberCtrl.clear();
                   },
                 ),
@@ -360,7 +331,7 @@ class _OwnerFlowState extends State<OwnerFlow> {
               const SizedBox(width: 10),
               ElevatedButton(
                 onPressed: () {
-                  widget.onAddBarber(newBarberCtrl.text);
+                  provider.addBarber(newBarberCtrl.text);
                   newBarberCtrl.clear();
                 },
                 style: ElevatedButton.styleFrom(
@@ -405,11 +376,11 @@ class _OwnerFlowState extends State<OwnerFlow> {
                   ),
                   Switch(
                     value: b.active,
-                    onChanged: (_) => widget.onToggleBarberActive(b.id),
+                    onChanged: (_) => provider.toggleBarberActive(b.id),
                     activeColor: AppColors.brass,
                   ),
                   GestureDetector(
-                    onTap: () => widget.onRemoveBarber(b.id),
+                    onTap: () => provider.removeBarber(b.id),
                     child: const Padding(
                       padding: EdgeInsets.only(left: 8),
                       child: Text('Remove', style: TextStyle(color: AppColors.red, fontSize: 12)),
