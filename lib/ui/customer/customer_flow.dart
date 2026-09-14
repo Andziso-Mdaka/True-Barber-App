@@ -7,7 +7,7 @@ import '../../controllers/app_provider.dart';
 // Import all the screens
 import 'account_screen.dart';
 import 'shop_detail_screen.dart';
-import 'shop_list_screen.dart';
+import 'explore_screen.dart'; // Swapped from shop_list_screen.dart
 import 'shop_map_screen.dart';
 import 'ticket_screen.dart';
 
@@ -24,7 +24,6 @@ class _CustomerFlowState extends State<CustomerFlow> {
 
   @override
   Widget build(BuildContext context) {
-    // This is the magic line that connects to the Provider!
     final provider = context.watch<AppProvider>();
     Widget body;
 
@@ -78,8 +77,8 @@ class _CustomerFlowState extends State<CustomerFlow> {
         onRefreshShops: provider.refreshShops,
       );
     } else {
-      body = ShopListScreen(
-        shops: provider.shops,
+      // Replaced ShopListScreen with the new ExploreScreen
+      body = ExploreScreen(
         onOpen: (s) => setState(() => openedShop = s),
         refreshingShops: provider.refreshingShops,
         onRefreshShops: provider.refreshShops,
