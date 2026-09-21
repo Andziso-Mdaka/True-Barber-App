@@ -14,6 +14,7 @@ import '../models/shop.dart';
 import '../models/barber.dart';
 import '../models/queue_entry.dart';
 import '../models/review.dart';
+import '../models/shopService.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -163,11 +164,15 @@ class AppProvider extends ChangeNotifier {
         .subscribe();
   }
 
-  Future<List<Shop>> _fetchShops() async {
+ Future<List<Shop>> _fetchShops() async {
     final uid = supabase.auth.currentUser?.id;
-    final shopRows = await supabase.from('shops').select();
+    
+    // 1. UPDATE: We now join the shop_services table in the query
+    final shopRows = await supabase.from('shops').select('*, shop_services(*)');
+    
     final statsRows = await supabase.from('shop_stats').select();
     final statsById = {for (final r in statsRows) r['shop_id'] as String: r};
+    
     // Notice the select() now joins the profiles table
     final reviewRows = await supabase.from('reviews').select('*, profiles(full_name)').order('created_at', ascending: false);
     final reviewsByShop = <String, List<Review>>{};
@@ -200,7 +205,17 @@ class AppProvider extends ChangeNotifier {
           photoUrl: row['photo_url'] as String?,
           portfolioUrls: List<String>.from(row['portfolio_urls'] ?? []),
           reviews: reviewsByShop[row['id']] ?? [],
-          services: List<String>.from(row['services'] ?? []),
+          
+          // 2. UPDATE: Add the phone number and map the new dynamic menu
+          phone: row['phone'] as String?,
+          menu: (row['shop_services'] as List<dynamic>?)
+              ?.map((item) => ShopService.fromJson(item as Map<String, dynamic>))
+              .toList() ?? [],
+              
+          // NOTE: I left your old string array here just in case you haven't 
+          // fully deleted it from your Shop model yet. If you have, you can delete this line!
+          services: List<String>.from(row['services'] ?? []), 
+          
           subscribers: [],
           queue: [],
           nextTicket: row['next_ticket'] as int,
@@ -345,11 +360,15 @@ class AppProvider extends ChangeNotifier {
           .select()
           .eq('shop_id', ownerShopId as Object)
           .inFilter('status', ['waiting', 'called'])
-          .order('ticket_no', ascending: true); // Keeps the queue in chronological order!
+          .order('ticket_no', ascending: true);
           
-      // Using maybeSingle() is good here, but if the shop_stats view hasn't been created yet, it could throw.
+      // NEW: Fetch the shop's menu
+      final serviceRows = await supabase
+          .from('shop_services')
+          .select()
+          .eq('shop_id', ownerShopId as Object);
+          
       final statsRow = await supabase.from('shop_stats').select().eq('shop_id', ownerShopId as Object).maybeSingle();
-      
       final barbersById = {for (final b in barberRows) b['id'] as String: b['name'] as String};
       
       final shop = ownerShop;
@@ -358,6 +377,11 @@ class AppProvider extends ChangeNotifier {
       shop.staff
         ..clear()
         ..addAll([for (final b in barberRows) Barber(id: b['id'] as String, name: b['name'] as String, active: b['active'] as bool)]);
+        
+      // NEW: Map the menu items to the shop
+      shop.menu
+        ..clear()
+        ..addAll([for (final s in serviceRows) ShopService.fromJson(s)]);
         
       shop.queue
         ..clear()
@@ -369,6 +393,10 @@ class AppProvider extends ChangeNotifier {
               name: q['display_name'] as String,
               barber: barbersById[q['barber_id']] ?? 'Unassigned',
               status: q['status'] as String,
+              // NEW: Add the new fields so the owner can see them
+              paymentMethod: q['payment_method'] as String? ?? 'cash',
+              serviceName: q['service_name'] as String?,
+              priceCharged: q['price_charged'] as int?,
             )
         ]);
         
@@ -573,6 +601,9 @@ class AppProvider extends ChangeNotifier {
       if (barberId != null) updates['barber_id'] = barberId;
 
       await supabase.from('queue_entries').update(updates).eq('id', entryId);
+      
+      // INSTANTLY update the owner's UI without waiting!
+      await refreshOwnerShopDetail(); 
     } catch (e) {
       showSnack('Failed to call customer', isError: true);
     }
@@ -584,6 +615,9 @@ class AppProvider extends ChangeNotifier {
         'status': 'done',
         'completed_at': DateTime.now().toIso8601String(),
       }).eq('id', entryId);
+      
+      // INSTANTLY update the owner's UI without waiting!
+      await refreshOwnerShopDetail();
     } catch (e) {
       showSnack('Failed to complete entry', isError: true);
     }
@@ -736,39 +770,36 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> addService(String service) async {
-    if (ownerShop == null || service.trim().isEmpty) return;
-    final cleanService = service.trim();
-    
-    // Prevent duplicates
-    if (ownerShop!.services.contains(cleanService)) return;
-
-    // Create a new array with the added service
-    final newServices = List<String>.from(ownerShop!.services)..add(cleanService);
+  Future<void> addService(String name, int price) async {
+    if (ownerShopId == null || name.isEmpty || price <= 0) return;
     
     try {
-      await supabase.from('shops').update({'services': newServices}).eq('id', ownerShop!.id);
-      ownerShop!.services = newServices;
-      notifyListeners();
+      await supabase.from('shop_services').insert({
+        'shop_id': ownerShopId,
+        'name': name,
+        'price': price,
+      });
+      
+      await refreshOwnerShopDetail(); // Instantly update the UI
     } catch (e) {
-      showSnack("Couldn't add service.", isError: true);
-      debugPrint('Failed to add service: $e');
+      showSnack('Failed to add service', isError: true);
+      debugPrint('Add service error: $e');
     }
   }
 
-  Future<void> removeService(String service) async {
-    if (ownerShop == null) return;
-    
-    // Create a new array without the target service
-    final newServices = List<String>.from(ownerShop!.services)..remove(service);
+  // Update this to accept the service ID instead of the string name
+  Future<void> removeService(String serviceId) async {
+    if (ownerShopId == null) return;
     
     try {
-      await supabase.from('shops').update({'services': newServices}).eq('id', ownerShop!.id);
-      ownerShop!.services = newServices;
-      notifyListeners();
+      await supabase
+          .from('shop_services')
+          .delete()
+          .eq('id', serviceId);
+          
+      await refreshOwnerShopDetail(); // Instantly update the UI
     } catch (e) {
-      showSnack("Couldn't remove service.", isError: true);
-      debugPrint('Failed to remove service: $e');
+      showSnack('Failed to remove service', isError: true);
     }
   }
 }

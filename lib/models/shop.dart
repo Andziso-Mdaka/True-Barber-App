@@ -1,10 +1,13 @@
 import 'barber.dart';
 import 'queue_entry.dart';
 import 'review.dart';
+import 'shopService.dart';
 
 class Shop {
   final String id;
   final String ownerId;
+  final String? phone;
+  final List<ShopService> menu; // This replaces the old string array
   List<String> services;
   String name;
   String area;
@@ -40,6 +43,8 @@ class Shop {
     this.photoUrl,
     this.portfolioUrls = const [],
     this.reviews = const [],
+    this.phone,
+    this.menu = const [],
     required this.subscribers,
     required this.queue,
     List<Barber>? staff,

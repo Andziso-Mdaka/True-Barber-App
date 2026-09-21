@@ -25,6 +25,8 @@ class _OwnerFlowState extends State<OwnerFlow> {
   LatLng? pickedLocation;
   final newBarberCtrl = TextEditingController();
   final newServiceCtrl = TextEditingController();
+  // NEW: Add a controller for the service price
+  final newServicePriceCtrl = TextEditingController();
   bool showStaff = false;
 
   @override
@@ -222,9 +224,10 @@ class _OwnerFlowState extends State<OwnerFlow> {
         
         const Text('SERVICES', style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
         const SizedBox(height: 8),
-        Row(
+       Row(
           children: [
             Expanded(
+              flex: 2,
               child: TextField(
                 controller: newServiceCtrl,
                 style: const TextStyle(color: AppColors.text),
@@ -236,17 +239,36 @@ class _OwnerFlowState extends State<OwnerFlow> {
                   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
                 ),
-                onSubmitted: (_) {
-                  provider.addService(newServiceCtrl.text);
-                  newServiceCtrl.clear();
-                },
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 1,
+              child: TextField(
+                controller: newServicePriceCtrl,
+                keyboardType: TextInputType.number,
+                style: const TextStyle(color: AppColors.text),
+                decoration: InputDecoration(
+                  hintText: 'Price',
+                  hintStyle: const TextStyle(color: AppColors.textFaint),
+                  filled: true,
+                  fillColor: AppColors.surface2,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                ),
               ),
             ),
             const SizedBox(width: 10),
             ElevatedButton(
               onPressed: () {
-                provider.addService(newServiceCtrl.text);
+                final price = int.tryParse(newServicePriceCtrl.text) ?? 0;
+                if (newServiceCtrl.text.isEmpty || price <= 0) {
+                  showSnack('Enter a valid name and price', isError: true);
+                  return;
+                }
+                provider.addService(newServiceCtrl.text, price);
                 newServiceCtrl.clear();
+                newServicePriceCtrl.clear();
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.brass,
@@ -259,13 +281,13 @@ class _OwnerFlowState extends State<OwnerFlow> {
           ],
         ),
         const SizedBox(height: 12),
-        if (shop.services.isEmpty)
+        if (shop.menu.isEmpty)
           const Text("Add some services so customers know what you offer.", style: TextStyle(color: AppColors.textFaint, fontSize: 13))
         else
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: shop.services.map((service) => Container(
+            children: shop.menu.map((service) => Container(
               padding: const EdgeInsets.only(left: 10, right: 4, top: 4, bottom: 4),
               decoration: BoxDecoration(
                 color: AppColors.surface2,
@@ -275,10 +297,10 @@ class _OwnerFlowState extends State<OwnerFlow> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(service, style: const TextStyle(color: AppColors.text, fontSize: 13)),
+                  Text('${service.name} - R${service.price}', style: const TextStyle(color: AppColors.text, fontSize: 13)),
                   const SizedBox(width: 4),
                   GestureDetector(
-                    onTap: () => provider.removeService(service),
+                    onTap: () => provider.removeService(service.id),
                     child: const Icon(Icons.close, color: AppColors.textMuted, size: 18),
                   ),
                 ],

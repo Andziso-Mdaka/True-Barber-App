@@ -3,12 +3,21 @@ class QueueEntry {
   final int ticketNo;
   final String name;
   final String barber;
-  String status; // 'waiting' | 'called' | 'done' | 'left'
+  final String status;
+  
+  // NEW FIELDS:
+  final String paymentMethod; 
+  final String? serviceName;
+  final int? priceCharged;
+
   QueueEntry({
     required this.id,
     required this.ticketNo,
     required this.name,
     required this.barber,
-    this.status = 'waiting',
+    required this.status,
+    this.paymentMethod = 'cash',
+    this.serviceName,
+    this.priceCharged,
   });
 }
