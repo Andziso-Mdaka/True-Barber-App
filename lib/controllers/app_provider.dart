@@ -133,6 +133,34 @@ class AppProvider extends ChangeNotifier {
       loadingData = false;
       notifyListeners();
     }
+    
+  }
+
+  bool _realtimeInitialized = false;
+
+  void _setupRealtime() {
+    if (_realtimeInitialized) return;
+    _realtimeInitialized = true;
+
+    supabase
+        .channel('public:queue_entries')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'queue_entries',
+          callback: (payload) {
+            debugPrint('Queue updated via Realtime! Event: ${payload.eventType}');
+            
+            if (ownerShopId != null) {
+              refreshOwnerShopDetail();
+            }
+            if (myTicket != null) {
+              refreshTicket(); 
+            }
+            refreshShops();
+          },
+        )
+        .subscribe();
   }
 
   Future<List<Shop>> _fetchShops() async {
@@ -252,54 +280,7 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> walkIn(String shopId) async {
-    final shop = shops.firstWhere((s) => s.id == shopId);
-    joiningQueue = true;
-    notifyListeners();
-    
-    List<Barber> activeStaff = shop.staff.where((b) => b.active).toList();
-    if (activeStaff.isEmpty && !shop.isMine) {
-      try {
-        final rows = await supabase.from('barbers').select().eq('shop_id', shopId).eq('active', true);
-        activeStaff = [for (final b in rows) Barber(id: b['id'] as String, name: b['name'] as String)];
-      } catch (e) {
-        debugPrint('Failed to fetch barbers: $e');
-      }
-    }
-    
-    final barberId = activeStaff.isEmpty ? null : activeStaff[DateTime.now().millisecondsSinceEpoch % activeStaff.length].id;
-
-    try {
-      final row = await supabase.rpc('join_queue', params: {'p_shop_id': shopId, 'p_barber_id': barberId});
-      final position = await supabase.rpc('queue_position', params: {'p_shop_id': shopId});
-      final barberName = barberId == null ? 'Unassigned' : activeStaff.firstWhere((b) => b.id == barberId).name;
-      
-      myTicket = QueueEntry(
-        id: row['id'] as String,
-        ticketNo: row['ticket_no'] as int,
-        name: row['display_name'] as String,
-        barber: barberName,
-        status: row['status'] as String,
-      );
-      myTicketPosition = (position as num).toInt();
-      myTicketShopId = shopId;
-      shop.queueCount += 1;
-      showSnack("You're in line — ticket #${row['ticket_no']}");
-    } on PostgrestException catch (e) {
-      final message = e.message.contains('No active subscription')
-          ? "You need an active subscription to walk in."
-          : e.message.contains('Already in another queue')
-              ? "You're already in a queue at another shop. Leave that one first."
-              : e.message;
-      showSnack(message, isError: true);
-    } catch (e) {
-      showSnack("Couldn't join the queue. Please try again.", isError: true);
-    } finally {
-      joiningQueue = false;
-      notifyListeners();
-    }
-  }
-
+  
   Future<void> refreshTicket() async {
     if (myTicket == null || myTicketShopId == null) return;
     refreshingTicket = true;
@@ -324,25 +305,7 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> leaveQueue() async {
-    if (myTicket == null || myTicketShopId == null) return;
-    final shopId = myTicketShopId!;
-    leavingQueue = true;
-    notifyListeners();
-    try {
-      await supabase.from('queue_entries').update({'status': 'left'}).eq('id', myTicket!.id);
-      shops.firstWhere((s) => s.id == shopId).queueCount -= 1;
-      myTicket = null;
-      myTicketPosition = null;
-      myTicketShopId = null;
-      showSnack('Left the queue');
-    } catch (e) {
-      showSnack("Couldn't leave the queue. Please try again.", isError: true);
-    } finally {
-      leavingQueue = false;
-      notifyListeners();
-    }
-  }
+ 
 
   // --- OWNER ACTIONS ---
   Future<void> refreshOwnerShopDetail() async {
@@ -508,30 +471,88 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> callCustomer(String queueId) async {
-    if (ownerShop == null) return;
+  // --- CUSTOMER QUEUE METHODS ---
+
+  Future<void> walkIn(String shopId) async {
+    final uid = supabase.auth.currentUser?.id;
+    if (uid == null) return;
+
+    // ADD THIS GUARD CLAUSE:
+    // If they already have a ticket, stop them before we even talk to the database
+    if (myTicket != null) {
+      showSnack('You are already in a queue!', isError: true);
+      return;
+    }
+    
+    joiningQueue = true;
+    notifyListeners();
+
     try {
-      await supabase.from('queue_entries').update({'status': 'called'}).eq('id', queueId);
-      ownerShop!.queue.firstWhere((q) => q.id == queueId).status = 'called';
-      notifyListeners();
-      showSnack('Customer called');
+      // 1. Get the customer's name
+      final profile = await supabase.from('profiles').select('full_name').eq('id', uid).single();
+      final displayName = profile['full_name'] ?? 'Customer';
+
+      // 2. Safely generate a ticket and insert them into the queue
+      await supabase.rpc('join_queue', params: {
+        'p_shop_id': shopId,
+        'p_customer_id': uid,
+        'p_display_name': displayName,
+      });
+
+      // 3. Immediately fetch the new ticket to update the UI
+      await refreshTicket();
+      showSnack("You're in the queue!");
     } catch (e) {
-      showSnack("Couldn't call that customer.", isError: true);
+      showSnack('Failed to join queue', isError: true);
+      debugPrint('Walk-in error: $e');
+    } finally {
+      joiningQueue = false;
+      notifyListeners();
     }
   }
 
-  Future<void> completeQueueEntry(String queueId) async {
-    if (ownerShop == null) return;
+  Future<void> leaveQueue() async {
+    if (myTicket == null) return;
+    leavingQueue = true;
+    notifyListeners();
+
     try {
-      await supabase.from('queue_entries').update({'status': 'done', 'completed_at': DateTime.now().toIso8601String()}).eq('id', queueId);
-      ownerShop!.queue.removeWhere((q) => q.id == queueId);
-      ownerShop!.queueCount = ownerShop!.queue.length;
-      notifyListeners();
-      showSnack('Marked done');
+      await supabase.from('queue_entries').update({'status': 'left'}).eq('id', myTicket!.id);
+      myTicket = null;
     } catch (e) {
-      showSnack("Couldn't update that ticket.", isError: true);
+      showSnack('Failed to leave queue', isError: true);
+    } finally {
+      leavingQueue = false;
+      notifyListeners();
     }
   }
+
+  // --- OWNER QUEUE METHODS ---
+
+  Future<void> callCustomer(String entryId, {String? barberId}) async {
+    try {
+      final updates = {'status': 'called'};
+      if (barberId != null) updates['barber_id'] = barberId;
+
+      await supabase.from('queue_entries').update(updates).eq('id', entryId);
+    } catch (e) {
+      showSnack('Failed to call customer', isError: true);
+    }
+  }
+
+  Future<void> completeQueueEntry(String entryId) async {
+    try {
+      await supabase.from('queue_entries').update({
+        'status': 'done',
+        'completed_at': DateTime.now().toIso8601String(),
+      }).eq('id', entryId);
+    } catch (e) {
+      showSnack('Failed to complete entry', isError: true);
+    }
+  }
+
+
+
 
   Future<void> addBarber(String name) async {
     if (ownerShop == null || name.trim().isEmpty) return;
