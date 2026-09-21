@@ -5,6 +5,7 @@ import '../../models/shop.dart';
 import '../../controllers/app_provider.dart';
 import '../widgets/primary_button.dart';
 import '../widgets/outline_button.dart';
+import '../../models/shopService.dart'; // Ensure you import your new model
 
 class ShopDetailScreen extends StatelessWidget {
   final Shop shop;
@@ -15,7 +16,7 @@ class ShopDetailScreen extends StatelessWidget {
   final bool queuedElsewhere;
   final VoidCallback onBack;
   final VoidCallback onSubscribe;
-  final VoidCallback onWalkIn;
+  final VoidCallback onWalkIn; // Kept for compatibility, but we bypass it for the modal
   final VoidCallback onCancel;
 
   const ShopDetailScreen({
@@ -36,14 +37,11 @@ class ShopDetailScreen extends StatelessWidget {
     int selectedRating = 5;
     final commentCtrl = TextEditingController();
     
-    // 1. Grab the provider using the main screen's context BEFORE opening the dialog
     final provider = context.read<AppProvider>();
 
     showDialog(
       context: context,
-      // 2. Rename this context to 'dialogContext'
       builder: (dialogContext) => StatefulBuilder(
-        // 3. Rename this context to 'stateContext'
         builder: (stateContext, setState) => AlertDialog(
           backgroundColor: AppColors.surface,
           title: const Text('How was your cut?', style: TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
@@ -84,7 +82,6 @@ class ShopDetailScreen extends StatelessWidget {
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: AppColors.brass, foregroundColor: AppColors.bg),
               onPressed: () {
-                // 4. Use the captured provider directly!
                 provider.submitReview(shopId, selectedRating, commentCtrl.text);
                 Navigator.pop(dialogContext);
               },
@@ -96,10 +93,122 @@ class ShopDetailScreen extends StatelessWidget {
     );
   }
 
+  // NEW: The Walk-In Modal Bottom Sheet
+  void _showWalkInModal(BuildContext context, Shop currentShop, bool isSubscribed, AppProvider provider) {
+    ShopService? selectedService;
+    String payMethod = isSubscribed ? 'subscription' : 'cash';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setState) {
+          return Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+              left: 20, right: 20, top: 24
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Join the Queue', style: TextStyle(color: AppColors.text, fontSize: 22, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 24),
+                
+                const Text('1. WHAT ARE YOU GETTING?', style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+                const SizedBox(height: 12),
+                if (currentShop.menu.isEmpty)
+                  const Text('This shop needs to add services before you can walk in.', style: TextStyle(color: AppColors.red, fontSize: 13))
+                else
+                  Wrap(
+                    spacing: 10, runSpacing: 10,
+                    children: currentShop.menu.map((s) {
+                      final isSelected = selectedService?.id == s.id;
+                      return GestureDetector(
+                        onTap: () => setState(() => selectedService = s),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: isSelected ? AppColors.brass.withOpacity(0.15) : AppColors.surface2,
+                            border: Border.all(color: isSelected ? AppColors.brass : AppColors.line),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text('${s.name} - R${s.price}', 
+                            style: TextStyle(
+                              color: isSelected ? AppColors.brass : AppColors.text, 
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal
+                            )
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                
+                const SizedBox(height: 32),
+                
+                const Text('2. HOW ARE YOU PAYING?', style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+                const SizedBox(height: 8),
+                
+                if (isSubscribed)
+                  RadioListTile<String>(
+                    title: const Text('Subscription', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+                    subtitle: const Text('Covered by your monthly fee', style: TextStyle(color: AppColors.textFaint, fontSize: 12)),
+                    activeColor: AppColors.brass,
+                    contentPadding: EdgeInsets.zero,
+                    value: 'subscription',
+                    groupValue: payMethod,
+                    onChanged: (v) => setState(() => payMethod = v!),
+                  ),
+                RadioListTile<String>(
+                  title: const Text('Cash In-Store', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+                  subtitle: const Text('Pay the barber directly', style: TextStyle(color: AppColors.textFaint, fontSize: 12)),
+                  activeColor: AppColors.brass,
+                  contentPadding: EdgeInsets.zero,
+                  value: 'cash',
+                  groupValue: payMethod,
+                  onChanged: (v) => setState(() => payMethod = v!),
+                ),
+                RadioListTile<String>(
+                  title: const Text('Once-off via App', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+                  subtitle: Text(selectedService != null ? 'Pay R${selectedService!.price} now' : 'Select a service to see price', style: const TextStyle(color: AppColors.textFaint, fontSize: 12)),
+                  activeColor: AppColors.brass,
+                  contentPadding: EdgeInsets.zero,
+                  value: 'once_off',
+                  groupValue: payMethod,
+                  onChanged: (v) => setState(() => payMethod = v!),
+                ),
+                
+                const SizedBox(height: 24),
+                PrimaryButton(
+                  label: 'Confirm & Join Queue',
+                  loading: false, 
+                  onTap: () {
+                    if (selectedService == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a service first')));
+                      return;
+                    }
+                    Navigator.pop(sheetContext);
+                    
+                    // NEW: Pass details to provider, THEN trigger the navigation!
+                    provider.walkIn(currentShop.id, payMethod, selectedService!).then((_) {
+                      onWalkIn(); 
+                    });
+                  }
+                ),
+              ],
+            ),
+          );
+        }
+      )
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Tells the UI to listen for real-time updates for this specific shop
-    final currentShop = context.watch<AppProvider>().shops.firstWhere((s) => s.id == shop.id, orElse: () => shop);
+    final provider = context.watch<AppProvider>();
+    final currentShop = provider.shops.firstWhere((s) => s.id == shop.id, orElse: () => shop);
     
     return Column(
       children: [
@@ -181,6 +290,16 @@ class ShopDetailScreen extends StatelessWidget {
                         Text(currentShop.name, style: const TextStyle(color: AppColors.text, fontSize: 24, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 4),
                         Text('${currentShop.area} · ${currentShop.chairs} chairs', style: const TextStyle(color: AppColors.textMuted, fontSize: 14)),
+                        if (currentShop.phone != null && currentShop.phone!.isNotEmpty) ...[
+                           const SizedBox(height: 4),
+                           Row(
+                             children: [
+                               const Icon(Icons.phone, color: AppColors.brass, size: 14),
+                               const SizedBox(width: 4),
+                               Text(currentShop.phone!, style: const TextStyle(color: AppColors.brass, fontSize: 13, fontWeight: FontWeight.w600)),
+                             ],
+                           )
+                        ]
                       ],
                     ),
                   ),
@@ -195,7 +314,6 @@ class ShopDetailScreen extends StatelessWidget {
                       children: [
                         const Icon(Icons.star, color: AppColors.brass, size: 14),
                         const SizedBox(width: 4),
-                        // We added the review count in parentheses right here!
                         Text(
                           '${currentShop.rating.toStringAsFixed(1)} (${currentShop.reviews.length})', 
                           style: const TextStyle(color: AppColors.brass, fontWeight: FontWeight.bold, fontSize: 13)
@@ -228,7 +346,8 @@ class ShopDetailScreen extends StatelessWidget {
                       PrimaryButton(
                         label: 'Walk in',
                         loading: joiningQueue,
-                        onTap: queuedElsewhere ? () {} : onWalkIn,
+                        // NEW: Opens the modal instead of instantly queueing
+                        onTap: queuedElsewhere ? () {} : () => _showWalkInModal(context, currentShop, true, provider),
                       ),
                       if (queuedElsewhere)
                         const Padding(
@@ -247,31 +366,44 @@ class ShopDetailScreen extends StatelessWidget {
               ] else ...[
                 Text('R${currentShop.price} / month', style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 4),
-                const Text('Unlimited walk-ins. No booking required.', style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                const Text('Unlimited walk-ins. No booking required.', style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
                 const SizedBox(height: 16),
                 PrimaryButton(
-                  label: 'Subscribe & Walk in',
+                  label: 'Subscribe',
                   loading: subscribing,
                   onTap: onSubscribe,
                 ),
+                const SizedBox(height: 12),
+                CustomOutlineButton(
+                  label: 'Just Walk In (Once-off / Cash)',
+                  loading: joiningQueue,
+                  // NEW: Opens the modal!
+                  onTap: queuedElsewhere ? () {} : () => _showWalkInModal(context, currentShop, false, provider),
+                ),
+                if (queuedElsewhere)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text("You're already in a queue somewhere else.", style: TextStyle(color: AppColors.red, fontSize: 12), textAlign: TextAlign.center),
+                  ),
               ],
               
               const SizedBox(height: 32),
               
-              if (currentShop.services.isNotEmpty) ...[
-                const Text("SERVICES", style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
+              // NEW: Display the priced menu items
+              if (currentShop.menu.isNotEmpty) ...[
+                const Text("MENU", style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
-                  children: currentShop.services.map((service) => Container(
+                  children: currentShop.menu.map((service) => Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
                       color: AppColors.surface2,
                       borderRadius: BorderRadius.circular(6),
                       border: Border.all(color: AppColors.line),
                     ),
-                    child: Text(service, style: const TextStyle(color: AppColors.text, fontSize: 13)),
+                    child: Text('${service.name} - R${service.price}', style: const TextStyle(color: AppColors.text, fontSize: 13)),
                   )).toList(),
                 ),
                 const SizedBox(height: 24),

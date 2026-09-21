@@ -37,13 +37,11 @@ class _CustomerFlowState extends State<CustomerFlow> {
         queuedElsewhere: provider.myTicket != null && provider.myTicketShopId != openedShop!.id,
         onBack: () => setState(() => openedShop = null),
         onSubscribe: () => provider.subscribe(openedShop!.id),
-        onWalkIn: () async {
-          final shopId = openedShop!.id;
-          await provider.walkIn(shopId);
+        onWalkIn: () {
           if (mounted) {
             setState(() {
               openedShop = null;
-              tab = 1;
+              tab = 1; // Switches to the Ticket tab
             });
           }
         },

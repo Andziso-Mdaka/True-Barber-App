@@ -539,12 +539,11 @@ class AppProvider extends ChangeNotifier {
 
   // --- CUSTOMER QUEUE METHODS ---
 
-  Future<void> walkIn(String shopId) async {
+ // Now we pass the actual ShopService object the customer picked!
+  Future<void> walkIn(String shopId, String paymentMethod, ShopService selectedService) async {
     final uid = supabase.auth.currentUser?.id;
     if (uid == null) return;
-
-    // ADD THIS GUARD CLAUSE:
-    // If they already have a ticket, stop them before we even talk to the database
+    
     if (myTicket != null) {
       showSnack('You are already in a queue!', isError: true);
       return;
@@ -554,18 +553,18 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // 1. Get the customer's name
       final profile = await supabase.from('profiles').select('full_name').eq('id', uid).single();
       final displayName = profile['full_name'] ?? 'Customer';
 
-      // 2. Safely generate a ticket and insert them into the queue
       await supabase.rpc('join_queue', params: {
         'p_shop_id': shopId,
         'p_customer_id': uid,
         'p_display_name': displayName,
+        'p_payment_method': paymentMethod,
+        'p_service_name': selectedService.name,   // <-- Passes "Skin Fade"
+        'p_price_charged': selectedService.price, // <-- Passes 150
       });
 
-      // 3. Immediately fetch the new ticket to update the UI
       await refreshTicket();
       showSnack("You're in the queue!");
     } catch (e) {
