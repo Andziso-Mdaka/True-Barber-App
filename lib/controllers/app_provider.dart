@@ -282,29 +282,55 @@ class AppProvider extends ChangeNotifier {
 
   
   Future<void> refreshTicket() async {
-    if (myTicket == null || myTicketShopId == null) return;
-    refreshingTicket = true;
-    notifyListeners();
+    final uid = supabase.auth.currentUser?.id;
+    if (uid == null) return;
+
     try {
-      final row = await supabase.from('queue_entries').select().eq('id', myTicket!.id).maybeSingle();
-      if (row == null || !['waiting', 'called'].contains(row['status'])) {
-        myTicket = null;
-        myTicketPosition = null;
-        myTicketShopId = null;
-        showSnack("Looks like you've been served — enjoy the cut!");
+      // 1. Find the user's active ticket
+      final ticketRow = await supabase
+          .from('queue_entries')
+          .select()
+          .eq('customer_id', uid)
+          .inFilter('status', ['waiting', 'called'])
+          .maybeSingle();
+          
+      if (ticketRow != null) {
+        final shopId = ticketRow['shop_id'] as String;
+        
+        // 2. Safely get position (with a fallback if the RPC fails)
+        int position = 1;
+        try {
+           final posRes = await supabase.rpc('queue_position', params: {'p_shop_id': shopId});
+           if (posRes != null) position = (posRes as num).toInt();
+        } catch (rpcError) {
+           debugPrint('Position calculation skipped: $rpcError');
+        }
+        
+        // 3. Update the provider state!
+        myTicketShopId = shopId;
+        myTicket = QueueEntry(
+          id: ticketRow['id'] as String,
+          ticketNo: ticketRow['ticket_no'] as int,
+          name: ticketRow['display_name'] as String,
+          barber: ticketRow['barber_id'] == null ? 'Next available' : 'Assigned',
+          status: ticketRow['status'] as String,
+        );
+        myTicketPosition = position;
+        
       } else {
-        final position = await supabase.rpc('queue_position', params: {'p_shop_id': myTicketShopId});
-        myTicket!.status = row['status'] as String;
-        myTicketPosition = (position as num).toInt();
+        // If no active ticket is found, clear the state
+        myTicket = null;
+        myTicketShopId = null;
+        myTicketPosition = null;
       }
+      
+      // THIS IS CRUCIAL: Tell the UI to rebuild and un-grey the tab
+      notifyListeners(); 
+      
     } catch (e) {
-      showSnack("Couldn't refresh your ticket.", isError: true);
-    } finally {
-      refreshingTicket = false;
-      notifyListeners();
+      debugPrint('Error refreshing ticket: $e');
     }
   }
-
  
 
   // --- OWNER ACTIONS ---
