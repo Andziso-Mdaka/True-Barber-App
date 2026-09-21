@@ -336,37 +336,49 @@ class AppProvider extends ChangeNotifier {
   // --- OWNER ACTIONS ---
   Future<void> refreshOwnerShopDetail() async {
     if (ownerShopId == null) return;
-    final barberRows = await supabase.from('barbers').select().eq('shop_id', ownerShopId as Object);
-    final queueRows = await supabase
-        .from('queue_entries')
-        .select()
-        .eq('shop_id', ownerShopId as Object)
-        .inFilter('status', ['waiting', 'called'])
-        .order('ticket_no');
-    final statsRow = await supabase.from('shop_stats').select().eq('shop_id', ownerShopId as Object).maybeSingle();
-    final barbersById = {for (final b in barberRows) b['id'] as String: b['name'] as String};
     
-    final shop = ownerShop;
-    if (shop == null) return;
-    
-    shop.staff
-      ..clear()
-      ..addAll([for (final b in barberRows) Barber(id: b['id'] as String, name: b['name'] as String, active: b['active'] as bool)]);
-    shop.queue
-      ..clear()
-      ..addAll([
-        for (final q in queueRows)
-          QueueEntry(
-            id: q['id'] as String,
-            ticketNo: q['ticket_no'] as int,
-            name: q['display_name'] as String,
-            barber: barbersById[q['barber_id']] ?? 'Unassigned',
-            status: q['status'] as String,
-          )
-      ]);
-    shop.queueCount = shop.queue.length;
-    if (statsRow != null) shop.subscriberCount = statsRow['subscriber_count'] as int;
-    notifyListeners();
+    try {
+      final barberRows = await supabase.from('barbers').select().eq('shop_id', ownerShopId as Object);
+      
+      final queueRows = await supabase
+          .from('queue_entries')
+          .select()
+          .eq('shop_id', ownerShopId as Object)
+          .inFilter('status', ['waiting', 'called'])
+          .order('ticket_no', ascending: true); // Keeps the queue in chronological order!
+          
+      // Using maybeSingle() is good here, but if the shop_stats view hasn't been created yet, it could throw.
+      final statsRow = await supabase.from('shop_stats').select().eq('shop_id', ownerShopId as Object).maybeSingle();
+      
+      final barbersById = {for (final b in barberRows) b['id'] as String: b['name'] as String};
+      
+      final shop = ownerShop;
+      if (shop == null) return;
+      
+      shop.staff
+        ..clear()
+        ..addAll([for (final b in barberRows) Barber(id: b['id'] as String, name: b['name'] as String, active: b['active'] as bool)]);
+        
+      shop.queue
+        ..clear()
+        ..addAll([
+          for (final q in queueRows)
+            QueueEntry(
+              id: q['id'] as String,
+              ticketNo: q['ticket_no'] as int,
+              name: q['display_name'] as String,
+              barber: barbersById[q['barber_id']] ?? 'Unassigned',
+              status: q['status'] as String,
+            )
+        ]);
+        
+      shop.queueCount = shop.queue.length;
+      if (statsRow != null) shop.subscriberCount = statsRow['subscriber_count'] as int;
+      
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error refreshing owner shop detail: $e');
+    }
   }
 
   Future<void> createShop(String name, String area, int price, int chairs, LatLng? location) async {
