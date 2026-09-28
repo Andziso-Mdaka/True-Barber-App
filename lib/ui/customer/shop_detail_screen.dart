@@ -5,7 +5,7 @@ import '../../models/shop.dart';
 import '../../controllers/app_provider.dart';
 import '../widgets/primary_button.dart';
 import '../widgets/outline_button.dart';
-import '../../models/shopService.dart'; // Ensure you import your new model
+import '../../models/shopService.dart';
 
 class ShopDetailScreen extends StatelessWidget {
   final Shop shop;
@@ -16,7 +16,7 @@ class ShopDetailScreen extends StatelessWidget {
   final bool queuedElsewhere;
   final VoidCallback onBack;
   final VoidCallback onSubscribe;
-  final VoidCallback onWalkIn; // Kept for compatibility, but we bypass it for the modal
+  final VoidCallback onWalkIn; 
   final VoidCallback onCancel;
 
   const ShopDetailScreen({
@@ -93,7 +93,6 @@ class ShopDetailScreen extends StatelessWidget {
     );
   }
 
-  // NEW: The Walk-In Modal Bottom Sheet
   void _showWalkInModal(BuildContext context, Shop currentShop, bool isSubscribed, AppProvider provider) {
     ShopService? selectedService;
     String payMethod = isSubscribed ? 'subscription' : 'cash';
@@ -153,8 +152,8 @@ class ShopDetailScreen extends StatelessWidget {
                 
                 if (isSubscribed)
                   RadioListTile<String>(
-                    title: const Text('Subscription', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
-                    subtitle: const Text('Covered by your monthly fee', style: TextStyle(color: AppColors.textFaint, fontSize: 12)),
+                    title: const Text('VIP Pass', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+                    subtitle: const Text('Covered by your 30-Day Pass', style: TextStyle(color: AppColors.textFaint, fontSize: 12)),
                     activeColor: AppColors.brass,
                     contentPadding: EdgeInsets.zero,
                     value: 'subscription',
@@ -183,15 +182,27 @@ class ShopDetailScreen extends StatelessWidget {
                 const SizedBox(height: 24),
                 PrimaryButton(
                   label: 'Confirm & Join Queue',
-                  loading: false, 
-                  onTap: () {
+                  loading: joiningQueue, 
+                  onTap: () async {
                     if (selectedService == null) {
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a service first')));
                       return;
                     }
-                    Navigator.pop(sheetContext);
                     
-                    // NEW: Pass details to provider, THEN trigger the navigation!
+                    Navigator.pop(sheetContext); 
+                    
+                    // NEW LOGIC: Use the updated Yoco payment method signature
+                    if (payMethod == 'once_off') {
+                      final paymentStarted = await provider.processYocoPayment(
+                        amount: selectedService!.price,
+                        shopId: currentShop.id,
+                        paymentType: 'once_off',
+                        serviceName: selectedService!.name,
+                      );
+                      if (!paymentStarted) return; 
+                    }
+                    
+                    // Proceed to add them to the queue
                     provider.walkIn(currentShop.id, payMethod, selectedService!).then((_) {
                       onWalkIn(); 
                     });
@@ -339,14 +350,13 @@ class ShopDetailScreen extends StatelessWidget {
                         children: [
                           Icon(Icons.check_circle, color: AppColors.brass, size: 20),
                           SizedBox(width: 10),
-                          Text('You are a regular here', style: TextStyle(color: AppColors.text, fontSize: 15, fontWeight: FontWeight.bold)),
+                          Text('You have a 30-Day VIP Pass', style: TextStyle(color: AppColors.text, fontSize: 15, fontWeight: FontWeight.bold)),
                         ],
                       ),
                       const SizedBox(height: 16),
                       PrimaryButton(
                         label: 'Walk in',
                         loading: joiningQueue,
-                        // NEW: Opens the modal instead of instantly queueing
                         onTap: queuedElsewhere ? () {} : () => _showWalkInModal(context, currentShop, true, provider),
                       ),
                       if (queuedElsewhere)
@@ -356,7 +366,7 @@ class ShopDetailScreen extends StatelessWidget {
                         ),
                       const SizedBox(height: 12),
                       CustomOutlineButton(
-                        label: 'Cancel subscription',
+                        label: 'Pass Info', // Updated from Cancel Subscription
                         loading: cancelling,
                         onTap: onCancel,
                       ),
@@ -364,20 +374,33 @@ class ShopDetailScreen extends StatelessWidget {
                   ),
                 ),
               ] else ...[
-                Text('R${currentShop.price} / month', style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
+                // UPDATED UI: 30-Day pass phrasing instead of monthly auto-renew
+                Text('R${currentShop.price} / 30 Days', style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 4),
-                const Text('Unlimited walk-ins. No booking required.', style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                const Text('Unlimited walk-ins. Valid for 30 days.', style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
                 const SizedBox(height: 16),
                 PrimaryButton(
-                  label: 'Subscribe',
+                  label: 'Buy VIP Pass',
                   loading: subscribing,
-                  onTap: onSubscribe,
+                  onTap: () async {
+                    // NEW LOGIC: Trigger Yoco directly for the subscription
+                    final paymentStarted = await provider.processYocoPayment(
+                      amount: currentShop.price,
+                      shopId: currentShop.id,
+                      paymentType: 'subscription',
+                      serviceName: '30-Day VIP Pass',
+                    );
+                    
+                    if (paymentStarted) {
+                      // Trigger the callback to tell the parent UI to refresh data
+                      onSubscribe(); 
+                    }
+                  },
                 ),
                 const SizedBox(height: 12),
                 CustomOutlineButton(
                   label: 'Just Walk In (Once-off / Cash)',
                   loading: joiningQueue,
-                  // NEW: Opens the modal!
                   onTap: queuedElsewhere ? () {} : () => _showWalkInModal(context, currentShop, false, provider),
                 ),
                 if (queuedElsewhere)
@@ -389,7 +412,6 @@ class ShopDetailScreen extends StatelessWidget {
               
               const SizedBox(height: 32),
               
-              // NEW: Display the priced menu items
               if (currentShop.menu.isNotEmpty) ...[
                 const Text("MENU", style: TextStyle(color: AppColors.textMuted, fontSize: 11, letterSpacing: 0.5)),
                 const SizedBox(height: 8),

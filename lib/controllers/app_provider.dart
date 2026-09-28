@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/utils.dart';
 import '../core/firebase_web_config.dart';
@@ -167,21 +168,41 @@ class AppProvider extends ChangeNotifier {
  Future<List<Shop>> _fetchShops() async {
     final uid = supabase.auth.currentUser?.id;
     
-    // 1. UPDATE: We now join the shop_services table in the query
+    // 1. Fetch shops with services
     final shopRows = await supabase.from('shops').select('*, shop_services(*)');
     
     final statsRows = await supabase.from('shop_stats').select();
     final statsById = {for (final r in statsRows) r['shop_id'] as String: r};
     
-    // Notice the select() now joins the profiles table
-    final reviewRows = await supabase.from('reviews').select('*, profiles(full_name)').order('created_at', ascending: false);
+    // 2. Fetch active subscriptions for the logged-in customer
+    final activeSubscribedShopIds = <String>{};
+    if (uid != null) {
+      final nowUtcIso = DateTime.now().toUtc().toIso8601String();
+      final subRows = await supabase
+          .from('subscriptions')
+          .select('shop_id')
+          .eq('customer_id', uid)
+          .gte('expires_at', nowUtcIso);
+
+      for (final r in subRows) {
+        activeSubscribedShopIds.add(r['shop_id'] as String);
+      }
+    }
+
+    // 3. Fetch reviews
+    final reviewRows = await supabase
+        .from('reviews')
+        .select('*, profiles(full_name)')
+        .order('created_at', ascending: false);
+        
     final reviewsByShop = <String, List<Review>>{};
     for (final r in reviewRows) {
       final rev = Review(
         id: r['id'] as String,
         customerId: r['customer_id'] as String,
-        // Grab the joined profile name
-        customerName: r['profiles'] != null ? r['profiles']['full_name'] as String? ?? 'Regular' : 'Regular',
+        customerName: r['profiles'] != null 
+            ? r['profiles']['full_name'] as String? ?? 'Regular' 
+            : 'Regular',
         rating: r['rating'] as int,
         comment: r['comment'] as String?,
         createdAt: DateTime.parse(r['created_at'] as String),
@@ -205,18 +226,17 @@ class AppProvider extends ChangeNotifier {
           photoUrl: row['photo_url'] as String?,
           portfolioUrls: List<String>.from(row['portfolio_urls'] ?? []),
           reviews: reviewsByShop[row['id']] ?? [],
-          
-          // 2. UPDATE: Add the phone number and map the new dynamic menu
           phone: row['phone'] as String?,
           menu: (row['shop_services'] as List<dynamic>?)
               ?.map((item) => ShopService.fromJson(item as Map<String, dynamic>))
               .toList() ?? [],
-              
-          // NOTE: I left your old string array here just in case you haven't 
-          // fully deleted it from your Shop model yet. If you have, you can delete this line!
           services: List<String>.from(row['services'] ?? []), 
           
-          subscribers: [],
+          // If the user has an active pass for this shop, include their UID
+          subscribers: (uid != null && activeSubscribedShopIds.contains(row['id']))
+              ? [uid]
+              : [],
+              
           queue: [],
           nextTicket: row['next_ticket'] as int,
           isMine: row['owner_id'] == uid,
@@ -538,6 +558,58 @@ class AppProvider extends ChangeNotifier {
   }
 
   // --- CUSTOMER QUEUE METHODS ---
+
+  Future<bool> processYocoPayment({
+  required int amount,
+  required String shopId,
+  required String paymentType, // 'subscription' or 'once_off'
+  String? serviceName,
+}) async {
+  final uid = supabase.auth.currentUser?.id;
+  if (uid == null) {
+    showSnack('You must be logged in to pay', isError: true);
+    return false;
+  }
+
+  try {
+    showSnack('Generating secure payment link...', isError: false);
+
+    // 1. Send all metadata required by yoco-checkout and yoco-webhook
+    final response = await supabase.functions.invoke(
+      'yoco-checkout',
+      body: {
+        'amount': amount,
+        'serviceName': serviceName ?? '30-Day VIP Pass',
+        'shopId': shopId,
+        'customerId': uid,          // Required by the webhook
+        'paymentType': paymentType, // Tells the webhook to add 30 days
+      },
+    );
+
+    final data = response.data as Map<String, dynamic>;
+
+    // 2. Extract redirect URL
+    if (data.containsKey('redirectUrl')) {
+      final checkoutUrl = Uri.parse(data['redirectUrl']);
+
+      // 3. Open Yoco hosted checkout in an in-app browser
+      if (await canLaunchUrl(checkoutUrl)) {
+        await launchUrl(checkoutUrl, mode: LaunchMode.inAppWebView);
+        return true;
+      } else {
+        showSnack('Could not open payment gateway', isError: true);
+        return false;
+      }
+    } else {
+      showSnack('Payment initialization failed', isError: true);
+      return false;
+    }
+  } catch (e) {
+    showSnack('Error starting payment: $e', isError: true);
+    debugPrint('Yoco error: $e');
+    return false;
+  }
+}
 
  // Now we pass the actual ShopService object the customer picked!
   Future<void> walkIn(String shopId, String paymentMethod, ShopService selectedService) async {
