@@ -43,5 +43,13 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- Deep linking for Yoco Payments -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <!-- This registers the truebarber://payment scheme -->
+                <data android:scheme="truebarber" android:host="payment" />
+            </intent-filter>
     </queries>
 </manifest>

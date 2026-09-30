@@ -593,8 +593,9 @@ class AppProvider extends ChangeNotifier {
       final checkoutUrl = Uri.parse(data['redirectUrl']);
 
       // 3. Open Yoco hosted checkout in an in-app browser
+      // Change from inAppWebView to externalApplication
       if (await canLaunchUrl(checkoutUrl)) {
-        await launchUrl(checkoutUrl, mode: LaunchMode.inAppWebView);
+        await launchUrl(checkoutUrl, mode: LaunchMode.externalApplication);
         return true;
       } else {
         showSnack('Could not open payment gateway', isError: true);
