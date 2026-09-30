@@ -181,33 +181,58 @@ class ShopDetailScreen extends StatelessWidget {
                 
                 const SizedBox(height: 24),
                 PrimaryButton(
-                  label: 'Confirm & Join Queue',
-                  loading: joiningQueue, 
-                  onTap: () async {
-                    if (selectedService == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a service first')));
-                      return;
-                    }
-                    
-                    Navigator.pop(sheetContext); 
-                    
-                    // NEW LOGIC: Use the updated Yoco payment method signature
-                    if (payMethod == 'once_off') {
-                      final paymentStarted = await provider.processYocoPayment(
-                        amount: selectedService!.price,
-                        shopId: currentShop.id,
-                        paymentType: 'once_off',
-                        serviceName: selectedService!.name,
-                      );
-                      if (!paymentStarted) return; 
-                    }
-                    
-                    // Proceed to add them to the queue
-                    provider.walkIn(currentShop.id, payMethod, selectedService!).then((_) {
-                      onWalkIn(); 
-                    });
-                  }
-                ),
+  label: 'Confirm & Join Queue',
+  loading: joiningQueue,
+  onTap: () async {
+    if (selectedService == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select a service first')),
+      );
+      return;
+    }
+
+    Navigator.pop(sheetContext);
+
+    if (payMethod == 'once_off') {
+      // IMPORTANT: do NOT call provider.walkIn() here. The queue entry for
+      // a once-off payment is created SERVER-SIDE, inside the Yoco webhook,
+      // only once payment.succeeded genuinely fires. Calling walkIn() here
+      // would join the queue the instant the checkout tab opens, regardless
+      // of whether the customer ever actually pays — which was the bug.
+      await provider.processYocoPayment(
+        amount: selectedService!.price,
+        shopId: currentShop.id,
+        paymentType: 'once_off',
+        serviceName: selectedService!.name,
+      );
+      // The checkout tab is now open. There is a real gap — seconds, maybe
+      // longer — between now and the webhook actually creating the ticket.
+      // Tell the customer plainly rather than pretending it's instant.
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Complete payment in the tab that just opened — "
+                "your ticket will appear here once it's confirmed."),
+            duration: Duration(seconds: 5),
+          ),
+        );
+      }
+      // Best-effort auto-refresh while they're likely still completing
+      // checkout, so the ticket shows up without them needing to think
+      // about pulling to refresh themselves.
+      for (var i = 0; i < 10; i++) {
+        await Future.delayed(const Duration(seconds: 3));
+        await provider.refreshTicket();
+        if (provider.myTicket != null) break;
+      }
+    } else {
+      // Cash and subscription-covered walk-ins have nothing to wait on —
+      // there's no payment gate for either, so joining immediately is correct.
+      await provider.walkIn(currentShop.id, payMethod, selectedService!);
+      onWalkIn();
+    }
+  },
+),
               ],
             ),
           );
